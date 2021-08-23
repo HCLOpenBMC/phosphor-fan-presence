@@ -74,7 +74,9 @@ class ShutdownAlarmMonitor
      * @param[in] bus - The sdbusplus bus object
      * @param[in] event - The sdeventplus event object
      */
-    ShutdownAlarmMonitor(sdbusplus::bus::bus& bus, sdeventplus::Event& event);
+  ShutdownAlarmMonitor(sdbusplus::bus::bus& bus, sdeventplus::Event& event,
+                         std::shared_ptr<phosphor::fan::PowerState> powerState);
+
 
   private:
     /**
@@ -173,6 +175,10 @@ class ShutdownAlarmMonitor
      * @brief The sdeventplus Event object
      */
     sdeventplus::Event& event;
+     /**
+     * @brief The PowerState object to track power state changes.
+     */
+    std::shared_ptr<phosphor::fan::PowerState> _powerState;
 
     /**
      * @brief The match for properties changing on the HardShutdown
@@ -186,10 +192,7 @@ class ShutdownAlarmMonitor
      */
     sdbusplus::bus::match::match softShutdownMatch;
 
-    /**
-     * @brief The PowerState object to track power state changes.
-     */
-    std::unique_ptr<phosphor::fan::PowerState> _powerState;
+ 
 
     /**
      * @brief The map of alarms.

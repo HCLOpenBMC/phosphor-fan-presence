@@ -12,6 +12,16 @@ std::shared_ptr<PowerState> getPowerStateObject()
         powerState = std::make_shared<PGoodState>();
     }
     return powerState;
-}
+} 
 
-} // namespace phosphor::fan
+/*std::shared_ptr<PowerState> getPowerStateObject()
+{
+    if (!powerState)
+    {
+        powerState = std::make_shared<CurrentPower>();
+    }
+    return powerState;
+
+}*/ // namespace phosphor::fan
+
+}

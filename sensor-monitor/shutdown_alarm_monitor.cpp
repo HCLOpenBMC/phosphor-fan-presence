@@ -14,17 +14,16 @@
  * limitations under the License.
  */
 #include "config.h"
-
 #include "shutdown_alarm_monitor.hpp"
-
+#include <iostream>
 #include <fmt/format.h>
 #include <unistd.h>
-
+#include <iostream>
 #include <phosphor-logging/log.hpp>
 #include <xyz/openbmc_project/Logging/Entry/server.hpp>
 
 namespace sensor::monitor
-{
+{                         
 using namespace phosphor::logging;
 using namespace phosphor::fan::util;
 using namespace phosphor::fan;
@@ -33,6 +32,7 @@ namespace fs = std::filesystem;
 const std::map<ShutdownType, std::string> shutdownInterfaces{
     {ShutdownType::hard, "xyz.openbmc_project.Sensor.Threshold.HardShutdown"},
     {ShutdownType::soft, "xyz.openbmc_project.Sensor.Threshold.SoftShutdown"}};
+    
 
 const std::map<ShutdownType, std::map<AlarmType, std::string>> alarmProperties{
     {ShutdownType::hard,
@@ -83,11 +83,11 @@ const auto loggingPath = "/xyz/openbmc_project/logging";
 const auto loggingCreateIface = "xyz.openbmc_project.Logging.Create";
 
 using namespace sdbusplus::bus::match;
-
-ShutdownAlarmMonitor::ShutdownAlarmMonitor(sdbusplus::bus::bus& bus,
-                                           sdeventplus::Event& event) :
+ShutdownAlarmMonitor::ShutdownAlarmMonitor(
+    sdbusplus::bus::bus& bus, sdeventplus::Event& event,
+    std::shared_ptr<PowerState> powerState) :
     bus(bus),
-    event(event),
+    event(event), _powerState(std::move(powerState)),
     hardShutdownMatch(bus,
                       "type='signal',member='PropertiesChanged',"
                       "path_namespace='/xyz/openbmc_project/sensors',"
@@ -101,11 +101,13 @@ ShutdownAlarmMonitor::ShutdownAlarmMonitor(sdbusplus::bus::bus& bus,
                       "arg0='" +
                           shutdownInterfaces.at(ShutdownType::hard) + "'",
                       std::bind(&ShutdownAlarmMonitor::propertiesChanged, this,
-                                std::placeholders::_1)),
-    _powerState(std::make_unique<PGoodState>(
-        bus, std::bind(&ShutdownAlarmMonitor::powerStateChanged, this,
-                       std::placeholders::_1)))
+                                             std::placeholders::_1))
+                          
+    
 {
+ _powerState->addCallback("shutdownMon",
+                             std::bind(&ShutdownAlarmMonitor::powerStateChanged,
+                                       this, std::placeholders::_1));
     findAlarms();
 
     if (_powerState->isPowerOn())
@@ -121,6 +123,8 @@ ShutdownAlarmMonitor::ShutdownAlarmMonitor(sdbusplus::bus::bus& bus,
         timestamps.clear();
     }
 }
+
+             
 
 void ShutdownAlarmMonitor::findAlarms()
 {
@@ -240,6 +244,10 @@ void ShutdownAlarmMonitor::checkAlarm(bool value, const AlarmKey& alarmKey)
 
 void ShutdownAlarmMonitor::startTimer(const AlarmKey& alarmKey)
 {
+
+    phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "start timer class is started ");
+
     const auto& [sensorPath, shutdownType, alarmType] = alarmKey;
     const auto& propertyName = alarmProperties.at(shutdownType).at(alarmType);
     std::chrono::milliseconds shutdownDelay{shutdownDelays.at(shutdownType)};
@@ -359,6 +367,9 @@ void ShutdownAlarmMonitor::timerExpired(const AlarmKey& alarmKey)
     const auto& [sensorPath, shutdownType, alarmType] = alarmKey;
     const auto& propertyName = alarmProperties.at(shutdownType).at(alarmType);
 
+      phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "timer expired class started  ");
+
     auto value = SDBusPlus::getProperty<double>(bus, sensorPath, valueInterface,
                                                 valueProperty);
 
@@ -370,12 +381,27 @@ void ShutdownAlarmMonitor::timerExpired(const AlarmKey& alarmKey)
 
     // Re-send the event log.  If someone didn't want this it could be
     // wrapped by a compile option.
-    createEventLog(alarmKey, true, value, true);
+     phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "create event log started ");
 
-    SDBusPlus::callMethod(systemdService, systemdPath, systemdMgrIface,
+    createEventLog(alarmKey, true, value, true);
+   
+      phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "create  even log end");
+
+
+ phosphor::logging::log<phosphor::logging::level::INFO>(
+            "calling the  SDBusPlus Method..................................... "
+         " call callmethod  ");    
+
+   SDBusPlus::callMethod(systemdService, systemdPath, systemdMgrIface,
                           "StartUnit", "obmc-chassis-hard-poweroff@0.target",
                           "replace");
-
+      
+ 
+ phosphor::logging::log<phosphor::logging::level::INFO>(
+            "ending  the  SDBusPlus Method..................................... "
+         " end call method  ");   
     timestamps.erase(alarmKey);
 }
 
@@ -409,6 +435,10 @@ void ShutdownAlarmMonitor::createEventLog(
     const auto& [sensorPath, shutdownType, alarmType] = alarmKey;
     std::map<std::string, std::string> ad{{"SENSOR_NAME", sensorPath},
                                           {"_PID", std::to_string(getpid())}};
+
+   phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "createEventLog class is started................... ");
+
 
     std::string errorName =
         (alarmValue) ? alarmEventLogs.at(shutdownType).at(alarmType)

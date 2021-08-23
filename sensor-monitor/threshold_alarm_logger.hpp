@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #pragma once
-
+#include "power_state.hpp"
 #include <sdbusplus/bus.hpp>
 #include <sdbusplus/bus/match.hpp>
 #include <sdeventplus/event.hpp>
@@ -42,6 +42,7 @@ using InterfaceKey = std::tuple<ObjectPath, InterfaceName>;
  *
  * xyz.openbmc_project.Sensor.Threshold.Error.TemperatureWarningHigh
  * xyz.openbmc_project.Sensor.Threshold.Error.TemperatureWarningHighClear
+ * Event logs are only created when the power is on.
  */
 class ThresholdAlarmLogger
 {
@@ -60,8 +61,14 @@ class ThresholdAlarmLogger
      *
      * @param[in] bus - The sdbusplus bus object
      * @param[in] event - The sdeventplus event object
+     *  @param[in] powerState - The PowerState object
      */
-    ThresholdAlarmLogger(sdbusplus::bus::bus& bus, sdeventplus::Event& event);
+    
+     ThresholdAlarmLogger(sdbusplus::bus::bus& bus, sdeventplus::Event& event,
+                         std::shared_ptr<phosphor::fan::PowerState> powerState);
+     
+     ThresholdAlarmLogger(sdbusplus::bus::bus& bus, sdeventplus::Event& event);
+
 
   private:
     /**
@@ -85,6 +92,13 @@ class ThresholdAlarmLogger
     void checkThresholds(const std::string& interface,
                          const std::string& sensorPath,
                          const std::string& service);
+
+     /**
+     * @brief Checks for all active alarms on all existing
+     *        threshold interfaces and creates event logs
+     *        if necessary.
+     */
+    void checkThresholds();
 
     /**
      * @brief Creates an event log for the alarm set/clear
@@ -133,6 +147,15 @@ class ThresholdAlarmLogger
      *                       May be empty if none found.
      */
     std::string getCallout(const std::string& sensorPath);
+     
+    /**
+     * @brief The power state changed handler.
+     *
+     * Checks alarms when power is turned on.
+     *
+     * @param[in] powerStateOn - If the power is now on or off.
+     */
+    void powerStateChanged(bool powerStateOn);
 
     /**
      * @brief The sdbusplus bus object
@@ -143,6 +166,11 @@ class ThresholdAlarmLogger
      * @brief The sdeventplus Event object
      */
     sdeventplus::Event& event;
+
+    /**
+     * @brief The PowerState object to track power state changes.
+     */
+       std::shared_ptr<phosphor::fan::PowerState> _powerState;
 
     /**
      * @brief The Warning interface match object

@@ -15,21 +15,43 @@
  */
 #include "shutdown_alarm_monitor.hpp"
 #include "threshold_alarm_logger.hpp"
-
 #include <sdbusplus/bus.hpp>
 #include <sdeventplus/event.hpp>
+#include <phosphor-logging/log.hpp>
+#include "power_state.hpp"
+#include <iostream>
+#include "nlohmann/json.hpp"
+#include <fstream>
+#include <iomanip>
+
 
 using namespace sensor::monitor;
 
 int main(int argc, char* argv[])
 {
+ 
+    phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "main is started ");
+  
     auto event = sdeventplus::Event::get_default();
     auto bus = sdbusplus::bus::new_default();
     bus.attach_event(event.get(), SD_EVENT_PRIORITY_NORMAL);
 
-    ShutdownAlarmMonitor shutdownMonitor{bus, event};
+ 
+    std::shared_ptr<phosphor::fan::PowerState> powerState =
+        std::make_shared<phosphor::fan::PGoodState>();
+                               
+   phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "started the  shuutdownalarm monitor");
+          
+     ShutdownAlarmMonitor shutdownMonitor{bus, event, powerState};
+    
 
-    ThresholdAlarmLogger logger{bus, event};
+     phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "Threshold alarm logger  is started ");
+  
+    ThresholdAlarmLogger logger{bus, event, powerState};
+ 
 
     return event.loop();
 }

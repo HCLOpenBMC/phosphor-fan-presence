@@ -118,6 +118,7 @@ class PowerState
      * @brief The power state value
      */
     bool _powerState = false;
+   // bool _powerState = true;
 
   private:
     /**
@@ -147,7 +148,10 @@ class PGoodState : public PowerState
                                  _pgoodPath, _pgoodInterface),
                              [this](auto& msg) { this->pgoodChanged(msg); })
     {
-        readPGood();
+     //  if(pGoodDisable)
+          setPowerState(true);
+     //  else
+     //      readPGood();
     }
 
     /**
@@ -164,7 +168,10 @@ class PGoodState : public PowerState
                                                                _pgoodInterface),
                [this](auto& msg) { this->pgoodChanged(msg); })
     {
-        readPGood();
+    //   if(pGoodDisable)
+          setPowerState(true);
+      // else
+      //    readPGood();
     }
 
     /**
@@ -201,6 +208,7 @@ class PGoodState : public PowerState
                 _bus, _pgoodPath, _pgoodInterface, _pgoodProperty);
 
             _powerState = static_cast<bool>(pgood);
+            //  _powerState = true;
         }
         catch (const util::DBusError& e)
         {
