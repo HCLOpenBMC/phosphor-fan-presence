@@ -13,19 +13,6 @@
 #include <sdbusplus/asio/connection.hpp>
 #include <sdbusplus/asio/object_server.hpp>
 
-
-constexpr auto MAPPER_BUSNAME = "xyz.openbmc_project.ObjectMapper";
-constexpr auto MAPPER_OBJ_PATH = "/xyz/openbmc_project/object_mapper";
-constexpr auto MAPPER_IFACE = "xyz.openbmc_project.ObjectMapper";
-
-using Service = std::string;
-using Path = std::string;
-using Interface = std::string;
-using Interfaces = std::vector<Interface>;
-using MapperResponseType = std::map<Path, std::map<Service, Interfaces>>;
-
-const std::string HOST_IFACE = "xyz.openbmc_project.State.Host";
-
 namespace phosphor::fan
 {
 
@@ -298,42 +285,17 @@ class HostPowerState : public PowerState
         if (hostStateProp != properties.end())
         {
             std::string hostState = std::get<std::string>(hostStateProp->second);
-	    std::string last_element(hostState.substr(hostState.rfind(".") + 1));
+	    std::string lastElement(hostState.substr(hostState.rfind(".") + 1));
 
-	    if(last_element == "Running")
+	    if(lastElement == "Running")
 	    {
 		    setPowerState(true);
 	    }
-	    if(last_element == "Off")
+	    if(lastElement == "Off")
 	    {
 		    setPowerState(false);
 	    } 
         }
-    }
-
-    void getChassisSubTree(sdbusplus::bus::bus& bus, MapperResponseType& subtree)
-    {
-
-	   int32_t depth = 0;
-           const std::string path = "/";
-           std::vector<std::string> hostIntfs = {HOST_IFACE};
-
-	   auto mapperCall = bus.new_method_call(MAPPER_BUSNAME, MAPPER_OBJ_PATH,
-			    MAPPER_IFACE, "GetSubTree");
-
-	   mapperCall.append(path);
-	   mapperCall.append(depth);
-	   mapperCall.append(hostIntfs);
-
-	   try
-	   {
-	       auto mapperResponseMsg = bus.call(mapperCall);
-	       mapperResponseMsg.read(subtree);
-	   }
-	   catch (const sdbusplus::exception::exception& e)
-	   {
-                   std::cerr << "Chassis GetSubTree read failed : " << e.what() <<std::endl;
-	   }
     }
 
   private:
@@ -345,8 +307,11 @@ class HostPowerState : public PowerState
         std::string hostStateservice;
         std::string hostService = "xyz.openbmc_project.State.Host";
 
-        MapperResponseType mapperResponse;
-        getChassisSubTree(_bus, mapperResponse);
+	int32_t depth = 0;
+        const std::string path = "/";
+        const std::string hostIntfs = "xyz.openbmc_project.State.Host"; 
+
+        auto mapperResponse = util::SDBusPlus::getSubTree(_bus, path, hostIntfs, depth); 
 
         if (mapperResponse.empty())
         {
@@ -359,6 +324,7 @@ class HostPowerState : public PowerState
 		for(auto serviceMap : elem.second)
 		{
 			hostStateservice = serviceMap.first.c_str();
+                        
 			if (hostStateservice.find(hostService) != std::string::npos)
 			{
 				_hostStatePath = elem.first.c_str();
@@ -368,13 +334,13 @@ class HostPowerState : public PowerState
 					auto CurrentHostState = util::SDBusPlus::getProperty<std::string>(
 							hostStateservice, _hostStatePath, _hostStateInterface, _hostStateProperty);
 
-					std::string last_element(CurrentHostState.substr(CurrentHostState.rfind(".") + 1));
+					std::string lastElement(CurrentHostState.substr(CurrentHostState.rfind(".") + 1));
 
-					if(last_element == "Running")
+					if(lastElement == "Running")
 					{
 						setPowerState(true);
 					}
-					if(last_element == "Off")
+					if(lastElement == "Off")
 					{
 						setPowerState(false);
 					}
