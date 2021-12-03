@@ -284,34 +284,45 @@ class HostPowerState : public PowerState
         auto hostStateProp = properties.find(_hostStateProperty);
         if (hostStateProp != properties.end())
         {
-            std::string hostState = std::get<std::string>(hostStateProp->second);
-	    std::string lastElement(hostState.substr(hostState.rfind(".") + 1));
+            const std::string& hostState = std::get<std::string>(hostStateProp->second);
 
-	    if(lastElement == "Running")
-	    {
-		    setPowerState(true);
-	    }
-	    if(lastElement == "Off")
-	    {
-		    setPowerState(false);
-	    } 
+            setHostPowerState(hostState);
         }
     }
 
   private:
+
+    void setHostPowerState(std::string currentHostState)
+    {
+	    std::string lastElement(currentHostState.substr(currentHostState.rfind(".") + 1));
+
+	    if(lastElement == "Running" || lastElement == "TransitioningToRunning" || lastElement == "DiagnosticMode")
+	    {
+		    setPowerState(true);
+	    }
+	    else if(lastElement == "Off" || lastElement == "TransitioningToOff" || lastElement == "Standby" || lastElement == "Quiesced")
+	    {
+		    setPowerState(false);
+	    }
+	    else 
+	    {
+		    std::cerr << "Invalid current HostState \n" <<std::endl;
+	    }
+    }
+
     /**
      * @brief Reads the CurrentHostState property from D-Bus and saves it.
      */
     void readHostState()
     {
+        std::string hostStatePath;
         std::string hostStateservice;
         std::string hostService = "xyz.openbmc_project.State.Host";
 
 	int32_t depth = 0;
         const std::string path = "/";
-        const std::string hostIntfs = "xyz.openbmc_project.State.Host"; 
 
-        auto mapperResponse = util::SDBusPlus::getSubTree(_bus, path, hostIntfs, depth); 
+        auto mapperResponse = util::SDBusPlus::getSubTree(_bus, path, _hostStateInterface, depth); 
 
         if (mapperResponse.empty())
         {
@@ -319,36 +330,22 @@ class HostPowerState : public PowerState
              return;
         }
 
-	for (const auto& elem : mapperResponse)
+	for (const auto& path : mapperResponse)
 	{
-		for(auto serviceMap : elem.second)
+		for(auto service : path.second)
 		{
-			hostStateservice = serviceMap.first.c_str();
-                        
+			hostStateservice = service.first.c_str();
+
 			if (hostStateservice.find(hostService) != std::string::npos)
 			{
-				_hostStatePath = elem.first.c_str();
+				hostStatePath = path.first.c_str();
+                               
+                                std::cerr << "Host path : " << hostStatePath << std::endl;
 
-				try
-				{
-					auto CurrentHostState = util::SDBusPlus::getProperty<std::string>(
-							hostStateservice, _hostStatePath, _hostStateInterface, _hostStateProperty);
+				auto currentHostState = util::SDBusPlus::getProperty<std::string>(
+						hostStateservice, hostStatePath, _hostStateInterface, _hostStateProperty);
 
-					std::string lastElement(CurrentHostState.substr(CurrentHostState.rfind(".") + 1));
-
-					if(lastElement == "Running")
-					{
-						setPowerState(true);
-					}
-					if(lastElement == "Off")
-					{
-						setPowerState(false);
-					}
-				}
-				catch (const util::DBusServiceError& e)
-				{
-					// Wait.. for propertiesChanged signal when service starts
-				}
+                                setHostPowerState(currentHostState);
 			}
 		}
 
@@ -357,7 +354,7 @@ class HostPowerState : public PowerState
     }
 
     /** @brief D-Bus path constant */
-    std::string _hostStatePath;
+    const std::string _hostStatePath{"xyz/openbmc_project/state/host"};
 
     /** @brief D-Bus interface constant */
     const std::string _hostStateInterface{"xyz.openbmc_project.State.Host"};
