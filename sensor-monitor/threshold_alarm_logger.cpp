@@ -208,6 +208,14 @@ void ThresholdAlarmLogger::checkThresholds(const std::string& interface,
                     .c_str());
             continue;
         }
+        catch (sdbusplus::exception::SdBusError& e)
+        {
+            log<level::ERR>(
+                fmt::format("Failed reading sensor threshold properties. : {}",
+                            e.what())
+                    .c_str());
+            continue;
+        }
     }
 }
 

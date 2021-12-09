@@ -243,7 +243,7 @@ class HostPowerState : public PowerState
 
      HostPowerState() :
         PowerState(), _match(_bus,
-                             sdbusplus::bus::match::rules::propertiesChanged(
+                             sdbusplus::bus::match::rules::propertiesChangedNamespace(
                                  _hostStatePath, _hostStateInterface),
                              [this](auto& msg) { this->hostStateChanged(msg); })
     {

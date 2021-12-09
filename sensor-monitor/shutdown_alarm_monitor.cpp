@@ -125,18 +125,30 @@ ShutdownAlarmMonitor::ShutdownAlarmMonitor(
 
 void ShutdownAlarmMonitor::findAlarms()
 {
+  
     // Find all shutdown threshold ifaces currently on D-Bus.
     for (const auto& [shutdownType, interface] : shutdownInterfaces)
     {
         auto paths = SDBusPlus::getSubTreePathsRaw(bus, "/", interface, 0);
+       
+        std::cerr << "interface : " << interface <<std::endl;
+
+      /*  if(paths.empty())
+        {
+           std::cerr << " No paths found for the interface : " << interface << std::endl;
+           continue;
+        }*/
 
         std::for_each(
             paths.begin(), paths.end(), [this, shutdownType](const auto& path) {
+
+                std::cerr << "PATHS : " << path <<std::endl;
+
                 alarms.emplace(AlarmKey{path, shutdownType, AlarmType::high},
                                nullptr);
                 alarms.emplace(AlarmKey{path, shutdownType, AlarmType::low},
                                nullptr);
-            });
+        });
     }
 }
 
@@ -155,6 +167,22 @@ void ShutdownAlarmMonitor::checkAlarms()
                                                  propertyName);
         }
         catch (const DBusServiceError& e)
+        {
+            // The sensor isn't on D-Bus anymore
+            log<level::INFO>(fmt::format("No {} interface on {} anymore.",
+                                         interface, sensorPath)
+                                 .c_str());
+            continue;
+        }
+        catch (const DBusMethodError& e)
+        {
+            // The sensor isn't on D-Bus anymore
+            log<level::INFO>(fmt::format("No {} interface on {} anymore.",
+                                         interface, sensorPath)
+                                 .c_str());
+            continue;
+        }
+        catch (sdbusplus::exception::SdBusError& e)
         {
             // The sensor isn't on D-Bus anymore
             log<level::INFO>(fmt::format("No {} interface on {} anymore.",
