@@ -278,38 +278,44 @@ class HostPowerState : public PowerState
     {
         std::string interface;
         std::map<std::string, std::variant<std::string>> properties;
+        std::vector<std::string> hostPowerStates;
 
         msg.read(interface, properties);
 
         auto hostStateProp = properties.find(_hostStateProperty);
         if (hostStateProp != properties.end())
         {
-            const std::string& hostState = std::get<std::string>(hostStateProp->second);
+            const std::string& currentHostState = std::get<std::string>(hostStateProp->second);
 
-            setHostPowerState(hostState);
+	    std::string hostState(currentHostState.substr(currentHostState.rfind(".") + 1));
+
+            hostPowerStates.emplace_back(hostState); 
+            setHostPowerState(hostPowerStates);
         }
     }
 
   private:
 
-    void setHostPowerState(std::string currentHostState)
+    void setHostPowerState(std::vector<std::string> hostPowerStates)
     {
-	    std::string lastElement(currentHostState.substr(currentHostState.rfind(".") + 1));
 
-	    if(lastElement == "Running" || lastElement == "TransitioningToRunning" || lastElement == "DiagnosticMode")
+	    for(size_t iter=0; iter<hostPowerStates.size(); iter++)
 	    {
-		    setPowerState(true);
-	    }
-	    else if(lastElement == "Off" || lastElement == "TransitioningToOff" || lastElement == "Standby" || lastElement == "Quiesced")
-	    {
-		    setPowerState(false);
-	    }
-	    else 
-	    {
-		    std::cerr << "Invalid current HostState \n" <<std::endl;
+		    if( hostPowerStates[iter] == "Running" || hostPowerStates[iter] == "TransitioningToRunning" || hostPowerStates[iter] == "DiagnosticMode" )
+		    {          
+			    setPowerState(true);
+			    break;
+		    } 
+		    else if(hostPowerStates[iter] == "Off" || hostPowerStates[iter] == "TransitioningToOff" || hostPowerStates[iter] == "Standby" || hostPowerStates[iter] == "Quiesced")
+		    {
+			    setPowerState(false);
+		    }
+		    else 
+		    {
+			    std::cerr << "Invalid current HostState.  \n" <<std::endl;
+		    }
 	    }
     }
-
     /**
      * @brief Reads the CurrentHostState property from D-Bus and saves it.
      */
@@ -318,6 +324,7 @@ class HostPowerState : public PowerState
         std::string hostStatePath;
         std::string hostStateservice;
         std::string hostService = "xyz.openbmc_project.State.Host";
+        std::vector<std::string> hostPowerStates;
 
 	int32_t depth = 0;
         const std::string path = "/";
@@ -340,17 +347,17 @@ class HostPowerState : public PowerState
 			{
 				hostStatePath = path.first.c_str();
                                
-                                std::cerr << "Host path : " << hostStatePath << std::endl;
-
 				auto currentHostState = util::SDBusPlus::getProperty<std::string>(
 						hostStateservice, hostStatePath, _hostStateInterface, _hostStateProperty);
 
-                                setHostPowerState(currentHostState);
+	                        std::string hostState(currentHostState.substr(currentHostState.rfind(".") + 1));
+
+                                hostPowerStates.emplace_back(hostState); 
 			}
 		}
 
 	}  
-
+        setHostPowerState(hostPowerStates);
     }
 
     /** @brief D-Bus path constant */
