@@ -260,7 +260,7 @@ class HostPowerState : public PowerState
      HostPowerState(sdbusplus::bus::bus& bus, StateChangeFunc func) :
         PowerState(bus, func),
         _match(_bus,
-               sdbusplus::bus::match::rules::propertiesChanged(_hostStatePath,
+               sdbusplus::bus::match::rules::propertiesChangedNamespace(_hostStatePath,
                                                                _hostStateInterface),
                [this](auto& msg) { this->hostStateChanged(msg); })
     {
