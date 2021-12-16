@@ -9,10 +9,6 @@
 #include <functional>
 #include <iostream>
 
-#include <boost/asio/io_service.hpp>
-#include <sdbusplus/asio/connection.hpp>
-#include <sdbusplus/asio/object_server.hpp>
-
 namespace phosphor::fan
 {
 
@@ -296,17 +292,17 @@ class HostPowerState : public PowerState
 
   private:
 
-    void setHostPowerState(std::vector<std::string> hostPowerStates)
+    void setHostPowerState(std::vector<std::string>& hostPowerStates)
     {
 
-	    for(size_t iter=0; iter<hostPowerStates.size(); iter++)
+	    for(const auto& powerState : hostPowerStates)
 	    {
-		    if( hostPowerStates[iter] == "Running" || hostPowerStates[iter] == "TransitioningToRunning" || hostPowerStates[iter] == "DiagnosticMode" )
+		    if( powerState == "Running" || powerState == "TransitioningToRunning" || powerState == "DiagnosticMode" )
 		    {          
 			    setPowerState(true);
 			    break;
 		    } 
-		    else if(hostPowerStates[iter] == "Off" || hostPowerStates[iter] == "TransitioningToOff" || hostPowerStates[iter] == "Standby" || hostPowerStates[iter] == "Quiesced")
+		    else if(powerState == "Off" || powerState == "TransitioningToOff" || powerState == "Standby" || powerState == "Quiesced")
 		    {
 			    setPowerState(false);
 		    }
@@ -322,7 +318,7 @@ class HostPowerState : public PowerState
     void readHostState()
     {
         std::string hostStatePath;
-        std::string hostStateservice;
+        std::string hostStateService;
         std::string hostService = "xyz.openbmc_project.State.Host";
         std::vector<std::string> hostPowerStates;
 
@@ -341,14 +337,14 @@ class HostPowerState : public PowerState
 	{
 		for(auto service : path.second)
 		{
-			hostStateservice = service.first.c_str();
+			hostStateService = service.first;
 
-			if (hostStateservice.find(hostService) != std::string::npos)
+			if (hostStateService.find(hostService) != std::string::npos)
 			{
-				hostStatePath = path.first.c_str();
+				hostStatePath = path.first;
                                
 				auto currentHostState = util::SDBusPlus::getProperty<std::string>(
-						hostStateservice, hostStatePath, _hostStateInterface, _hostStateProperty);
+						hostStateService, hostStatePath, _hostStateInterface, _hostStateProperty);
 
 	                        std::string hostState(currentHostState.substr(currentHostState.rfind(".") + 1));
 
@@ -356,12 +352,15 @@ class HostPowerState : public PowerState
 			}
 		}
 
-	}  
+	}
+        hostPowerStates.emplace_back("Off");
+        hostPowerStates.emplace_back("Off");
+        hostPowerStates.emplace_back("Running");
         setHostPowerState(hostPowerStates);
     }
 
     /** @brief D-Bus path constant */
-    const std::string _hostStatePath{"xyz/openbmc_project/state/host"};
+    const std::string _hostStatePath{"/xyz/openbmc_project/state/host"};
 
     /** @brief D-Bus interface constant */
     const std::string _hostStateInterface{"xyz.openbmc_project.State.Host"};
