@@ -239,8 +239,8 @@ class HostPowerState : public PowerState
 
      HostPowerState() :
         PowerState(), _match(_bus,
-                             sdbusplus::bus::match::rules::propertiesChangedNamespace(
-                                 _hostStatePath, _hostStateInterface),
+                             "type='signal',interface='org.freedesktop.DBus.Properties',member='"
+                             "PropertiesChanged',arg0='" + _hostStateInterface + "'",
                              [this](auto& msg) { this->hostStateChanged(msg); })
     {
         readHostState();
@@ -256,8 +256,8 @@ class HostPowerState : public PowerState
      HostPowerState(sdbusplus::bus::bus& bus, StateChangeFunc func) :
         PowerState(bus, func),
         _match(_bus,
-               sdbusplus::bus::match::rules::propertiesChangedNamespace(_hostStatePath,
-                                                               _hostStateInterface),
+               "type='signal',interface='org.freedesktop.DBus.Properties',member='"
+               "PropertiesChanged',arg0='" + _hostStateInterface + "'",
                [this](auto& msg) { this->hostStateChanged(msg); })
     {
         readHostState();
@@ -347,20 +347,14 @@ class HostPowerState : public PowerState
 						hostStateService, hostStatePath, _hostStateInterface, _hostStateProperty);
 
 	                        std::string hostState(currentHostState.substr(currentHostState.rfind(".") + 1));
-
+                               
                                 hostPowerStates.emplace_back(hostState); 
 			}
 		}
 
 	}
-        hostPowerStates.emplace_back("Off");
-        hostPowerStates.emplace_back("Off");
-        hostPowerStates.emplace_back("Running");
         setHostPowerState(hostPowerStates);
     }
-
-    /** @brief D-Bus path constant */
-    const std::string _hostStatePath{"/xyz/openbmc_project/state/host"};
 
     /** @brief D-Bus interface constant */
     const std::string _hostStateInterface{"xyz.openbmc_project.State.Host"};
