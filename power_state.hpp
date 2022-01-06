@@ -294,23 +294,25 @@ class HostPowerState : public PowerState
 
     void setHostPowerState(std::vector<std::string>& hostPowerStates)
     {
-
+            bool powerStateflag;
 	    for(const auto& powerState : hostPowerStates)
 	    {
 		    if( powerState == "Running" || powerState == "TransitioningToRunning" || powerState == "DiagnosticMode" )
 		    {          
-			    setPowerState(true);
+			    powerStateflag = true;
 			    break;
 		    } 
 		    else if(powerState == "Off" || powerState == "TransitioningToOff" || powerState == "Standby" || powerState == "Quiesced")
 		    {
-			    setPowerState(false);
+			    powerStateflag = false;
 		    }
 		    else 
 		    {
 			    std::cerr << "Invalid current HostState.  \n" <<std::endl;
 		    }
 	    }
+
+	    setPowerState(powerStateflag);
     }
     /**
      * @brief Reads the CurrentHostState property from D-Bus and saves it.
@@ -335,7 +337,7 @@ class HostPowerState : public PowerState
 
 	for (const auto& path : mapperResponse)
 	{
-		for(auto service : path.second)
+		for(const auto& service : path.second)
 		{
 			hostStateService = service.first;
 
