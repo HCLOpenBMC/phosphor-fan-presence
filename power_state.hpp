@@ -294,7 +294,7 @@ class HostPowerState : public PowerState
 
     void setHostPowerState(std::vector<std::string>& hostPowerStates)
     {
-            bool powerStateflag;
+            bool powerStateflag = false;
 	    for(const auto& powerState : hostPowerStates)
 	    {
 		    if( powerState == "Running" || powerState == "TransitioningToRunning" || powerState == "DiagnosticMode" )
@@ -302,16 +302,11 @@ class HostPowerState : public PowerState
 			    powerStateflag = true;
 			    break;
 		    } 
-		    else if(powerState == "Off" || powerState == "TransitioningToOff" || powerState == "Standby" || powerState == "Quiesced")
+		    else
 		    {
 			    powerStateflag = false;
 		    }
-		    else 
-		    {
-			    std::cerr << "Invalid current HostState.  \n" <<std::endl;
-		    }
 	    }
-
 	    setPowerState(powerStateflag);
     }
     /**
