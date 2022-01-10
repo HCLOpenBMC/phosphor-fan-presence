@@ -302,10 +302,6 @@ class HostPowerState : public PowerState
 			    powerStateflag = true;
 			    break;
 		    } 
-		    else
-		    {
-			    powerStateflag = false;
-		    }
 	    }
 	    setPowerState(powerStateflag);
     }
