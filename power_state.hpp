@@ -9,6 +9,8 @@
 #include <functional>
 #include <iostream>
 
+#include <xyz/openbmc_project/State/Host/server.hpp>
+
 namespace phosphor::fan
 {
 
@@ -237,14 +239,16 @@ class HostPowerState : public PowerState
     HostPowerState(HostPowerState&&) = delete;
     HostPowerState& operator=(HostPowerState&&) = delete;
 
-     HostPowerState() :
-        PowerState(), _match(_bus,
-                             "type='signal',interface='org.freedesktop.DBus.Properties',member='"
-                             "PropertiesChanged',arg0='" + _hostStateInterface + "'",
-                             [this](auto& msg) { this->hostStateChanged(msg); })
+    HostPowerState() :
+        PowerState(),
+        _match(_bus,
+               sdbusplus::bus::match::rules::propertiesChangedNamespace(
+                   _hostStatePath, _hostStateInterface),
+               [this](auto& msg) { this->hostStateChanged(msg); })
     {
         readHostState();
-    }
+    }    
+
 
     /**
      * @brief Constructor
@@ -256,12 +260,33 @@ class HostPowerState : public PowerState
      HostPowerState(sdbusplus::bus::bus& bus, StateChangeFunc func) :
         PowerState(bus, func),
         _match(_bus,
-               "type='signal',interface='org.freedesktop.DBus.Properties',member='"
-               "PropertiesChanged',arg0='" + _hostStateInterface + "'",
+               sdbusplus::bus::match::rules::propertiesChangedNamespace(
+                   _hostStatePath, _hostStateInterface),
                [this](auto& msg) { this->hostStateChanged(msg); })
     {
         readHostState();
     }
+
+    /**
+     * @brief convert string hostState to enum HostState and return enum HostState.
+     *
+     * @param[string hostState] std::string hostState - HostState type as string
+     */
+        
+    sdbusplus::xyz::openbmc_project::State::server::Host::HostState stringToEnumStates(std::string hostState)
+    {
+        sdbusplus::xyz::openbmc_project::State::server::Host::HostState hostStateObj;
+
+        if(hostState == "Off")  hostStateObj = sdbusplus::xyz::openbmc_project::State::server::Host::HostState::Off;
+        else if(hostState == "TransitioningToOff") hostStateObj = sdbusplus::xyz::openbmc_project::State::server::Host::HostState::TransitioningToOff;
+        else if(hostState == "Standby") hostStateObj = sdbusplus::xyz::openbmc_project::State::server::Host::HostState::Standby;
+        else if(hostState == "Running") hostStateObj = sdbusplus::xyz::openbmc_project::State::server::Host::HostState::Running;
+        else if(hostState == "TransitioningToRunning") hostStateObj = sdbusplus::xyz::openbmc_project::State::server::Host::HostState::TransitioningToRunning;
+        else if(hostState == "Quiesced") hostStateObj = sdbusplus::xyz::openbmc_project::State::server::Host::HostState::Quiesced;
+        else if(hostState == "DiagnosticMode") hostStateObj = sdbusplus::xyz::openbmc_project::State::server::Host::HostState::DiagnosticMode;
+
+        return hostStateObj;
+    } 
 
     /**
      * @brief PropertiesChanged callback for the CurrentHostState property.
@@ -274,7 +299,7 @@ class HostPowerState : public PowerState
     {
         std::string interface;
         std::map<std::string, std::variant<std::string>> properties;
-        std::vector<std::string> hostPowerStates;
+        std::vector<sdbusplus::xyz::openbmc_project::State::server::Host::HostState> hostPowerStates;
 
         msg.read(interface, properties);
 
@@ -285,35 +310,37 @@ class HostPowerState : public PowerState
 
 	    std::string hostState(currentHostState.substr(currentHostState.rfind(".") + 1));
 
-            hostPowerStates.emplace_back(hostState); 
+            hostPowerStates.emplace_back(stringToEnumStates(hostState)); 
             setHostPowerState(hostPowerStates);
         }
     }
 
   private:
 
-    void setHostPowerState(std::vector<std::string>& hostPowerStates)
+    void setHostPowerState(std::vector<sdbusplus::xyz::openbmc_project::State::server::Host::HostState>& hostPowerStates)
     {
             bool powerStateflag = false;
 	    for(const auto& powerState : hostPowerStates)
 	    {
-		    if( powerState == "Running" || powerState == "TransitioningToRunning" || powerState == "DiagnosticMode" )
+		    if( powerState == sdbusplus::xyz::openbmc_project::State::server::Host::HostState::Running || powerState == sdbusplus::xyz::openbmc_project::State::server::Host::HostState::TransitioningToRunning || powerState == sdbusplus::xyz::openbmc_project::State::server::Host::HostState::DiagnosticMode )
 		    {          
 			    powerStateflag = true;
 			    break;
-		    } 
+		    }  
 	    }
 	    setPowerState(powerStateflag);
-    }
+    } 
+
     /**
      * @brief Reads the CurrentHostState property from D-Bus and saves it.
      */
     void readHostState()
     {
+    
         std::string hostStatePath;
         std::string hostStateService;
         std::string hostService = "xyz.openbmc_project.State.Host";
-        std::vector<std::string> hostPowerStates;
+        std::vector<sdbusplus::xyz::openbmc_project::State::server::Host::HostState> hostPowerStates;
 
 	int32_t depth = 0;
         const std::string path = "/";
@@ -341,13 +368,15 @@ class HostPowerState : public PowerState
 
 	                        std::string hostState(currentHostState.substr(currentHostState.rfind(".") + 1));
                                
-                                hostPowerStates.emplace_back(hostState); 
+                                hostPowerStates.emplace_back(stringToEnumStates(hostState)); 
 			}
 		}
 
 	}
         setHostPowerState(hostPowerStates);
     }
+
+    const std::string _hostStatePath{"/xyz/openbmc_project/state"};
 
     /** @brief D-Bus interface constant */
     const std::string _hostStateInterface{"xyz.openbmc_project.State.Host"};
