@@ -98,7 +98,12 @@ AM_CONDITIONAL([WANT_MONITOR], [test "x$enable_monitor" != "xno"])
 AM_CONDITIONAL([WANT_SENSOR_MONITOR], [test "x$enable_sensor_monitor" == "xyes"])
 
 
-AS_IF([test "x$enable_host_state" == "xyes"],
+AC_ARG_ENABLE([host-state],
+    AS_HELP_STRING([--enable-host-state], [Enable host state]))
+
+AM_CONDITIONAL([WANT_HOST_STATE], [test "x$enable_host_state" == "xyes"])
+
+AM_COND_IF([WANT_HOST_STATE],
     [
         AM_CONDITIONAL(HOST_STATE_ENABLED, true)
     ],
