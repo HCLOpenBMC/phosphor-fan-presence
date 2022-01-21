@@ -30,9 +30,11 @@ int main(int argc, char* argv[])
 
 
 #ifdef ENABLE_HOST_STATE
+    std::cerr << "Host state enabled \n";
     std::shared_ptr<phosphor::fan::PowerState> powerState =
         std::make_shared<phosphor::fan::HostPowerState>();
 #else
+    std::cerr << "Host state disabled \n";
     std::shared_ptr<phosphor::fan::PowerState> powerState =
         std::make_shared<phosphor::fan::PGoodState>();
 #endif

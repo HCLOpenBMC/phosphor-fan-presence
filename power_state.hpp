@@ -11,7 +11,7 @@
 
 #include <xyz/openbmc_project/State/Host/server.hpp>
 
-using namespace sdbusplus::xyz::openbmc_project::State::server::Host::HostState;
+using HostState = sdbusplus::xyz::openbmc_project::State::server::Host::HostState;
 
 namespace phosphor::fan
 {
@@ -288,13 +288,13 @@ class HostPowerState : public PowerState
         auto hostStateProp = properties.find(_hostStateProperty);
         if (hostStateProp != properties.end())
         {
-            auto currentHostState = sdbusplus::message::convert_from_string<sdbusplus::xyz::openbmc_project::State::server::Host::HostState>(std::get<std::string>(hostStateProp->second));
+            auto currentHostState = sdbusplus::message::convert_from_string<HostState>(std::get<std::string>(hostStateProp->second));
            
 	    if (!currentHostState)
 	    {
 		    throw sdbusplus::exception::InvalidEnumString();
 	    }
-	    sdbusplus::xyz::openbmc_project::State::server::Host::HostState hostState = *currentHostState; 
+	    HostState hostState = *currentHostState; 
 
             hostPowerStates.emplace_back(hostState); 
             setHostPowerState(hostPowerStates);
@@ -303,12 +303,12 @@ class HostPowerState : public PowerState
 
   private:
 
-    void setHostPowerState(std::vector<sdbusplus::xyz::openbmc_project::State::server::Host::HostState>& hostPowerStates)
+    void setHostPowerState(std::vector<HostState>& hostPowerStates)
     {
             bool powerStateflag = false;
 	    for(const auto& powerState : hostPowerStates)
 	    {
-		    if( powerState == sdbusplus::xyz::openbmc_project::State::server::Host::HostState::Running || powerState == sdbusplus::xyz::openbmc_project::State::server::Host::HostState::TransitioningToRunning || powerState == sdbusplus::xyz::openbmc_project::State::server::Host::HostState::DiagnosticMode )
+		    if( powerState == HostState::Running || powerState == HostState::TransitioningToRunning || powerState == HostState::DiagnosticMode )
 		    {          
 			    powerStateflag = true;
 			    break;
@@ -326,7 +326,7 @@ class HostPowerState : public PowerState
         std::string hostStatePath;
         std::string hostStateService;
         std::string hostService = "xyz.openbmc_project.State.Host";
-        std::vector<sdbusplus::xyz::openbmc_project::State::server::Host::HostState> hostPowerStates;
+        std::vector<HostState> hostPowerStates;
 
 	int32_t depth = 0;
         const std::string path = "/";
@@ -349,7 +349,7 @@ class HostPowerState : public PowerState
 			{
 				hostStatePath = path.first;
                                
-				auto currentHostState = util::SDBusPlus::getProperty<sdbusplus::xyz::openbmc_project::State::server::Host::HostState>(hostStateService, hostStatePath, _hostStateInterface, _hostStateProperty);
+				auto currentHostState = util::SDBusPlus::getProperty<HostState>(hostStateService, hostStatePath, _hostStateInterface, _hostStateProperty);
 
                                 hostPowerStates.emplace_back(currentHostState); 
 			}
