@@ -308,7 +308,7 @@ class HostPowerState : public PowerState
             bool powerStateflag = false;
 	    for(const auto& powerState : hostPowerStates)
 	    {
-		    if( powerState == HostState::Running || powerState == HostState::TransitioningToRunning || powerState == HostState::DiagnosticMode )
+		    if( powerState == HostState::Standby || powerState == HostState::Running || powerState == HostState::TransitioningToRunning || powerState == HostState::Quiesced || powerState == HostState::DiagnosticMode )
 		    {          
 			    powerStateflag = true;
 			    break;
