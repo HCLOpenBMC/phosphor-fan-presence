@@ -49,23 +49,19 @@ void MissingOwnerTarget::run(Zone& zone)
                         [&intf = group.getInterface()](const auto& member) {
                             return !Manager::hasOwner(member, intf);
                         });
-        if (isMissingOwner)
-        {
-            zone.setTarget(_target);
-        }
-        // Update group's fan control active allowed based on action results
-        zone.setActiveAllow(group.getName(), !isMissingOwner);
+        // Update zone's target hold based on action results
+        zone.setTargetHold(group.getName(), _target, isMissingOwner);
     }
 }
 
 void MissingOwnerTarget::setTarget(const json& jsonObj)
 {
-    if (!jsonObj.contains("speed"))
+    if (!jsonObj.contains("target"))
     {
         throw ActionParseError{ActionBase::getName(),
-                               "Missing required speed value"};
+                               "Missing required target value"};
     }
-    _target = jsonObj["speed"].get<uint64_t>();
+    _target = jsonObj["target"].get<uint64_t>();
 }
 
 } // namespace phosphor::fan::control::json

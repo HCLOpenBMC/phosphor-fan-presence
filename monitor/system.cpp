@@ -1,5 +1,5 @@
 /**
- * Copyright © 2020 IBM Corporation
+ * Copyright © 2021 IBM Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,9 @@
 #include "tach_sensor.hpp"
 #include "trust_manager.hpp"
 #include "types.hpp"
+#include "utility.hpp"
 #ifdef MONITOR_USE_JSON
+#include "json_config.hpp"
 #include "json_parser.hpp"
 #endif
 
@@ -54,19 +56,54 @@ System::System(Mode mode, sdbusplus::bus::bus& bus,
 
 void System::start()
 {
-    _started = true;
+    namespace match = sdbusplus::bus::match;
+
+    // must be done before service detection
+    _inventoryMatch = std::make_unique<match::match>(
+        _bus, match::rules::nameOwnerChanged(util::INVENTORY_SVC),
+        std::bind(&System::inventoryOnlineCb, this, std::placeholders::_1));
+
+    bool invServiceRunning = util::SDBusPlus::callMethodAndRead<bool>(
+        _bus, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+        "org.freedesktop.DBus", "NameHasOwner", util::INVENTORY_SVC);
+
+    if (invServiceRunning)
+    {
+        _inventoryMatch.reset();
+
+        if (!_loaded)
+        {
+            load();
+        }
+    }
+}
+
+void System::load()
+{
     json jsonObj = json::object();
 #ifdef MONITOR_USE_JSON
-    auto confFile =
-        fan::JsonConfig::getConfFile(_bus, confAppName, confFileName);
-    jsonObj = fan::JsonConfig::load(confFile);
+    try
+    {
+        jsonObj = getJsonObj(_bus);
 #endif
-    // Retrieve and set trust groups within the trust manager
-    setTrustMgr(getTrustGroups(jsonObj));
-    // Retrieve fan definitions and create fan objects to be monitored
-    setFans(getFanDefinitions(jsonObj));
-    setFaultConfig(jsonObj);
-    log<level::INFO>("Configuration loaded");
+        auto trustGrps = getTrustGroups(jsonObj);
+        auto fanDefs = getFanDefinitions(jsonObj);
+        // Retrieve and set trust groups within the trust manager
+        setTrustMgr(getTrustGroups(jsonObj));
+        // Clear/set configured fan definitions
+        _fans.clear();
+        _fanHealth.clear();
+        // Retrieve fan definitions and create fan objects to be monitored
+        setFans(fanDefs);
+        setFaultConfig(jsonObj);
+        log<level::INFO>("Configuration loaded");
+
+        _loaded = true;
+#ifdef MONITOR_USE_JSON
+    }
+    catch (const phosphor::fan::NoConfigFound&)
+    {}
+#endif
 
     if (_powerState->isPowerOn())
     {
@@ -75,6 +112,108 @@ void System::start()
                           rule->check(PowerRuleState::runtime, _fanHealth);
                       });
     }
+
+    subscribeSensorsToServices();
+}
+
+void System::subscribeSensorsToServices()
+{
+    namespace match = sdbusplus::bus::match;
+
+    _sensorMatch.clear();
+
+    SensorMapType sensorMap;
+
+    // build a list of all interfaces, always including the value interface
+    // using set automatically guards against duplicates
+    std::set<std::string> unique_interfaces{util::FAN_SENSOR_VALUE_INTF};
+
+    for (const auto& fan : _fans)
+    {
+        for (const auto& sensor : fan->sensors())
+        {
+            unique_interfaces.insert(sensor->getInterface());
+        }
+    }
+    // convert them to vector to pass into getSubTreeRaw
+    std::vector<std::string> interfaces(unique_interfaces.begin(),
+                                        unique_interfaces.end());
+
+    try
+    {
+        // get service information for all service names that are
+        // hosting these interfaces
+        auto serviceObjects = util::SDBusPlus::getSubTreeRaw(
+            _bus, FAN_SENSOR_PATH, interfaces, 0);
+
+        for (const auto& fan : _fans)
+        {
+            // For every sensor in each fan
+            for (const auto& sensor : fan->sensors())
+            {
+                const auto itServ = serviceObjects.find(sensor->name());
+
+                if (serviceObjects.end() == itServ || itServ->second.empty())
+                {
+                    getLogger().log(
+                        fmt::format("Fan sensor entry {} not found in D-Bus",
+                                    sensor->name()),
+                        Logger::error);
+                    continue;
+                }
+
+                for (const auto& [serviceName, unused] : itServ->second)
+                {
+                    // associate service name with sensor
+                    sensorMap[serviceName].insert(sensor);
+                }
+            }
+        }
+
+        // only create 1 match per service
+        for (const auto& [serviceName, unused] : sensorMap)
+        {
+            // map its service name to the sensor
+            _sensorMatch.emplace_back(std::make_unique<match::match>(
+                _bus, match::rules::nameOwnerChanged(serviceName),
+                std::bind(&System::tachSignalOffline, this,
+                          std::placeholders::_1, sensorMap)));
+        }
+    }
+    catch (const util::DBusError&)
+    {
+        // catch exception from getSubTreeRaw() when fan sensor paths don't
+        // exist yet
+    }
+}
+
+void System::inventoryOnlineCb(sdbusplus::message::message& msg)
+{
+    namespace match = sdbusplus::bus::match;
+
+    std::string iface;
+    msg.read(iface);
+
+    if (util::INVENTORY_INTF != iface)
+    {
+        return;
+    }
+
+    std::string oldName;
+    msg.read(oldName);
+
+    std::string newName;
+    msg.read(newName);
+
+    // newName should never be empty since match was reset on the first
+    // nameOwnerChanged signal received from the service.
+    if (!_loaded && !newName.empty())
+    {
+        load();
+    }
+
+    // cancel any further notifications about the service state
+    _inventoryMatch.reset();
 }
 
 void System::sighupHandler(sdeventplus::source::Signal&,
@@ -82,28 +221,7 @@ void System::sighupHandler(sdeventplus::source::Signal&,
 {
     try
     {
-        json jsonObj = json::object();
-#ifdef MONITOR_USE_JSON
-        jsonObj = getJsonObj(_bus);
-#endif
-        auto trustGrps = getTrustGroups(jsonObj);
-        auto fanDefs = getFanDefinitions(jsonObj);
-        // Set configured trust groups
-        setTrustMgr(trustGrps);
-        // Clear/set configured fan definitions
-        _fans.clear();
-        _fanHealth.clear();
-        setFans(fanDefs);
-        setFaultConfig(jsonObj);
-        log<level::INFO>("Configuration reloaded successfully");
-
-        if (_powerState->isPowerOn())
-        {
-            std::for_each(_powerOffRules.begin(), _powerOffRules.end(),
-                          [this](auto& rule) {
-                              rule->check(PowerRuleState::runtime, _fanHealth);
-                          });
-        }
+        load();
     }
     catch (std::runtime_error& re)
     {
@@ -157,6 +275,40 @@ void System::setFans(const std::vector<FanDefinition>& fanDefs)
     }
 }
 
+// callback indicating a service went [on|off]line.
+// Determine on/offline status, set all sensors for that service
+// to new state
+//
+void System::tachSignalOffline(sdbusplus::message::message& msg,
+                               SensorMapType const& sensorMap)
+{
+    std::string serviceName, oldOwner, newOwner;
+
+    msg.read(serviceName);
+    msg.read(oldOwner);
+    msg.read(newOwner);
+
+    // true if sensor server came back online, false -> went offline
+    bool hasOwner = !newOwner.empty() && oldOwner.empty();
+
+    std::string stateStr(hasOwner ? "online" : "offline");
+    getLogger().log(fmt::format("Changing sensors for service {} to {}",
+                                serviceName, stateStr),
+                    Logger::info);
+
+    auto sensorItr(sensorMap.find(serviceName));
+
+    if (sensorItr != sensorMap.end())
+    {
+        // set all sensors' owner state to not-owned
+        for (auto& sensor : sensorItr->second)
+        {
+            sensor->setOwner(hasOwner);
+            sensor->getFan().process(*sensor);
+        }
+    }
+}
+
 void System::updateFanHealth(const Fan& fan)
 {
     std::vector<bool> sensorStatus;
@@ -205,7 +357,7 @@ void System::powerStateChanged(bool powerStateOn)
 
     if (powerStateOn)
     {
-        if (!_started)
+        if (!_loaded)
         {
             log<level::ERR>("No conf file found at power on");
             throw std::runtime_error("No conf file found at power on");
@@ -219,6 +371,11 @@ void System::powerStateChanged(bool powerStateOn)
         {
             handleOfflineFanController();
             return;
+        }
+
+        if (_sensorMatch.empty())
+        {
+            subscribeSensorsToServices();
         }
 
         std::for_each(_powerOffRules.begin(), _powerOffRules.end(),

@@ -79,6 +79,46 @@ class Event : public ConfigBase
     void enable();
 
     /**
+     * @brief Call any power on triggers
+     */
+    void powerOn();
+
+    /**
+     * @brief Call any power off triggers
+     */
+    void powerOff();
+
+    /**
+     * @brief Clear all groups available for events
+     */
+    static void clearAllGroups()
+    {
+        allGroups.clear();
+    }
+
+    /**
+     * @brief Set the groups that are available for events
+     *
+     * @param[in] groups - All groups available for events
+     */
+    static void
+        setAllGroups(std::map<configKey, std::unique_ptr<Group>>&& groups)
+    {
+        allGroups = std::move(groups);
+    }
+
+    /**
+     * @brief Load and/or return all groups available to be configured on events
+     *
+     * @param[in] loadGroups - Whether to load the groups or not
+     *            (default is to load the groups if not already loaded)
+     *
+     * @return Groups available to be configured on events from `groups.json`
+     */
+    static std::map<configKey, std::unique_ptr<Group>>&
+        getAllGroups(bool loadGroups = true);
+
+    /**
      * @brief Parse group parameters and configure a group object
      *
      * @param[in] group - Group object to get configured
@@ -117,15 +157,11 @@ class Event : public ConfigBase
     /* List of actions for this event */
     std::vector<std::unique_ptr<ActionBase>> _actions;
 
-    /* List of trigger enablement functions for this event */
-    std::vector<trigger::enableTrigger> _triggers;
+    /* List of trigger type and enablement functions for this event */
+    std::vector<std::tuple<std::string, trigger::enableTrigger>> _triggers;
 
-    /**
-     * @brief Load the groups available to be configured on events
-     *
-     * @return Groups available to be configured on events from `groups.json`
-     */
-    static auto& getAvailGroups() __attribute__((pure));
+    /* All groups available to be configred on events */
+    static std::map<configKey, std::unique_ptr<Group>> allGroups;
 
     /**
      * @brief Parse and set the event's actions(OPTIONAL)

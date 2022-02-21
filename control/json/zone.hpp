@@ -1,5 +1,5 @@
 /**
- * Copyright © 2020 IBM Corporation
+ * Copyright © 2022 IBM Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -216,12 +216,32 @@ class Zone : public ConfigBase
     void setTarget(uint64_t target);
 
     /**
-     * @brief Sets the automatic fan control allowed active state
+     * Add a target lock for the specified fan.
      *
-     * @param[in] ident - An identifier that affects the active state
-     * @param[in] isActiveAllow - Active state according to group
+     * @param[in] fname - Fan to request/add the target lock
+     * @param[in] target - Target to register
      */
-    void setActiveAllow(const std::string& ident, bool isActiveAllow);
+    void lockFanTarget(const std::string& fname, uint64_t target);
+
+    /**
+     * Remove target lock for specific fan.
+     *
+     * @param[in] fname - Fan to remove lock from
+     * @param[in] target- Target to de-register
+     */
+    void unlockFanTarget(const std::string& fname, uint64_t target);
+
+    /**
+     * Sets and holds all fans in the zone to the target given or releases a
+     * target hold resulting in the fans being held at the highest remaining
+     * hold target if other hold targets had been requested. When no hold
+     * targets exist, the zone returns to being active.
+     *
+     * @param[in] ident - Unique identifier for a target hold
+     * @param[in] target - Target to hold fans at
+     * @param[in] hold - Whether to hold(true) or release(false) a target hold
+     */
+    void setTargetHold(const std::string& ident, uint64_t target, bool hold);
 
     /**
      * @brief Set the floor to the given target and increase target to the floor
@@ -230,6 +250,18 @@ class Zone : public ConfigBase
      * @param[in] target - Target to set the floor to
      */
     void setFloor(uint64_t target);
+
+    /**
+     * Sets and holds the floor of the zone to the target given or releases a
+     * floor hold resulting in the fans being held at the highest remaining
+     * hold target if other floor hold targets had been requested. When no hold
+     * targets exist, the floor gets set to the default floor value.
+     *
+     * @param[in] ident - Unique identifier for a floor hold
+     * @param[in] target - Floor value
+     * @param[in] hold - Whether to hold(true) or release(false) a hold
+     */
+    void setFloorHold(const std::string& ident, uint64_t target, bool hold);
 
     /**
      * @brief Set the default floor to the given value
@@ -373,6 +405,13 @@ class Zone : public ConfigBase
         };
     }
 
+    /**
+     * @brief Dump the attributes into JSON
+     *
+     * @return json - JSON object with the attributes
+     */
+    json dump() const;
+
   private:
     /* The zone's associated dbus object */
     std::unique_ptr<DBusZone> _dbusZone;
@@ -431,8 +470,11 @@ class Zone : public ConfigBase
     /* The target decrease timer object */
     Timer _decTimer;
 
-    /* Map of active fan control allowed by a string identifier */
-    std::map<std::string, bool> _active;
+    /* Map of target holds by a string identifier */
+    std::unordered_map<std::string, uint64_t> _targetHolds;
+
+    /* Map of floor holds by a string identifier */
+    std::unordered_map<std::string, uint64_t> _floorHolds;
 
     /* Interface to property mapping of their associated set property handler
      * function */

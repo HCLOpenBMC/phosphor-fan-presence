@@ -26,6 +26,7 @@
 
 #include <experimental/filesystem>
 #include <functional>
+#include <optional>
 #include <utility>
 
 namespace phosphor
@@ -35,7 +36,6 @@ namespace fan
 namespace monitor
 {
 
-constexpr auto FAN_SENSOR_VALUE_INTF = "xyz.openbmc_project.Sensor.Value";
 constexpr auto FAN_TARGET_PROPERTY = "Target";
 constexpr auto FAN_VALUE_PROPERTY = "Value";
 
@@ -62,7 +62,7 @@ static void
         value =
             util::SDBusPlus::getProperty<T>(bus, path, interface, propertyName);
     }
-    catch (std::exception& e)
+    catch (const std::exception& e)
     {
         phosphor::logging::log<phosphor::logging::level::ERR>(e.what());
     }
@@ -72,43 +72,45 @@ TachSensor::TachSensor(Mode mode, sdbusplus::bus::bus& bus, Fan& fan,
                        const std::string& id, bool hasTarget, size_t funcDelay,
                        const std::string& interface, double factor,
                        int64_t offset, size_t method, size_t threshold,
-                       size_t timeout, const std::optional<size_t>& errorDelay,
+                       bool ignoreAboveMax, size_t timeout,
+                       const std::optional<size_t>& errorDelay,
                        size_t countInterval, const sdeventplus::Event& event) :
     _bus(bus),
     _fan(fan), _name(FAN_SENSOR_PATH + id), _invName(path(fan.getName()) / id),
     _hasTarget(hasTarget), _funcDelay(funcDelay), _interface(interface),
     _factor(factor), _offset(offset), _method(method), _threshold(threshold),
-    _timeout(timeout), _timerMode(TimerMode::func),
+    _ignoreAboveMax(ignoreAboveMax), _timeout(timeout),
+    _timerMode(TimerMode::func),
     _timer(event, std::bind(&Fan::updateState, &fan, std::ref(*this))),
     _errorDelay(errorDelay), _countInterval(countInterval)
 {
     // Query functional state from inventory
     // TODO - phosphor-fan-presence/issues/25
 
+    _functional = true;
+
     try
     {
-        auto service =
-            util::SDBusPlus::getService(_bus, util::INVENTORY_PATH + _invName,
-                                        util::OPERATIONAL_STATUS_INTF);
+        // see if any object paths in the inventory have the
+        // OperationalStatus interface.
+        auto subtree = util::SDBusPlus::getSubTreeRaw(
+            _bus, util::INVENTORY_PATH, util::OPERATIONAL_STATUS_INTF, 0);
 
-        if (!service.empty())
+        // if the tach sensor's entry already exists, we for sure can
+        // read its functional state from the inventory
+        if (subtree.end() != subtree.find(util::INVENTORY_PATH + _invName))
         {
             _functional = util::SDBusPlus::getProperty<bool>(
-                service, util::INVENTORY_PATH + _invName,
+                _bus, util::INVENTORY_PATH + _invName,
                 util::OPERATIONAL_STATUS_INTF, util::FUNCTIONAL_PROPERTY);
         }
-        else
-        {
-            // default to functional when service not up. Error handling done
-            // later
-            _functional = true;
-        }
     }
-    catch (util::DBusError& e)
+    catch (const util::DBusError& e)
     {
         log<level::DEBUG>(e.what());
-        _functional = true;
     }
+
+    updateInventory(_functional);
 
     if (!_functional && MethodMode::count == _method)
     {
@@ -131,9 +133,9 @@ TachSensor::TachSensor(Mode mode, sdbusplus::bus::bus& bus, Fan& fan,
             // object can be functional with a missing D-bus sensor.
         }
 
-        auto match = getMatchString(FAN_SENSOR_VALUE_INTF);
+        auto match = getMatchString(util::FAN_SENSOR_VALUE_INTF);
 
-        tachSignal = std::make_unique<sdbusplus::server::match::match>(
+        tachSignal = std::make_unique<sdbusplus::bus::match_t>(
             _bus, match.c_str(),
             [this](auto& msg) { this->handleTachChange(msg); });
 
@@ -141,7 +143,7 @@ TachSensor::TachSensor(Mode mode, sdbusplus::bus::bus& bus, Fan& fan,
         {
             match = getMatchString(_interface);
 
-            targetSignal = std::make_unique<sdbusplus::server::match::match>(
+            targetSignal = std::make_unique<sdbusplus::bus::match_t>(
                 _bus, match.c_str(),
                 [this](auto& msg) { this->handleTargetChange(msg); });
         }
@@ -169,7 +171,7 @@ TachSensor::TachSensor(Mode mode, sdbusplus::bus::bus& bus, Fan& fan,
 void TachSensor::updateTachAndTarget()
 {
     _tachInput = util::SDBusPlus::getProperty<decltype(_tachInput)>(
-        _bus, _name, FAN_SENSOR_VALUE_INTF, FAN_VALUE_PROPERTY);
+        _bus, _name, util::FAN_SENSOR_VALUE_INTF, FAN_VALUE_PROPERTY);
 
     if (_hasTarget)
     {
@@ -191,15 +193,21 @@ uint64_t TachSensor::getTarget() const
     return _tachTarget;
 }
 
-std::pair<uint64_t, uint64_t> TachSensor::getRange(const size_t deviation) const
+std::pair<uint64_t, std::optional<uint64_t>>
+    TachSensor::getRange(const size_t deviation) const
 {
     // Determine min/max range applying the deviation
     uint64_t min = getTarget() * (100 - deviation) / 100;
-    uint64_t max = getTarget() * (100 + deviation) / 100;
+    std::optional<uint64_t> max = getTarget() * (100 + deviation) / 100;
 
     // Adjust the min/max range by applying the factor & offset
     min = min * _factor + _offset;
-    max = max * _factor + _offset;
+    max = max.value() * _factor + _offset;
+
+    if (_ignoreAboveMax)
+    {
+        max = std::nullopt;
+    }
 
     return std::make_pair(min, max);
 }
@@ -272,8 +280,8 @@ void TachSensor::handleTargetChange(sdbusplus::message::message& msg)
 
 void TachSensor::handleTachChange(sdbusplus::message::message& msg)
 {
-    readPropertyFromMessage(msg, FAN_SENSOR_VALUE_INTF, FAN_VALUE_PROPERTY,
-                            _tachInput);
+    readPropertyFromMessage(msg, util::FAN_SENSOR_VALUE_INTF,
+                            FAN_VALUE_PROPERTY, _tachInput);
 
     // Check just this sensor against the target
     _fan.tachChanged(*this);
@@ -287,7 +295,7 @@ void TachSensor::startTimer(TimerMode mode)
     {
         log<level::DEBUG>(
             fmt::format("Start timer({}) on tach sensor {}. [delay = {}s]",
-                        mode, _name,
+                        static_cast<int>(mode), _name,
                         duration_cast<seconds>(getDelay(mode)).count())
                 .c_str());
         _timer.restartOnce(getDelay(mode));
@@ -368,8 +376,11 @@ void TachSensor::updateInventory(bool functional)
     auto objectMap =
         util::getObjMap<bool>(_invName, util::OPERATIONAL_STATUS_INTF,
                               util::FUNCTIONAL_PROPERTY, functional);
-    auto response = util::SDBusPlus::lookupAndCallMethod(
-        _bus, util::INVENTORY_PATH, util::INVENTORY_INTF, "Notify", objectMap);
+
+    auto response = util::SDBusPlus::callMethod(
+        _bus, util::INVENTORY_SVC, util::INVENTORY_PATH, util::INVENTORY_INTF,
+        "Notify", objectMap);
+
     if (response.is_method_error())
     {
         log<level::ERR>("Error in notify update of tach sensor inventory");

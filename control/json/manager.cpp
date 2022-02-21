@@ -25,7 +25,10 @@
 #include "power_state.hpp"
 #include "profile.hpp"
 #include "sdbusplus.hpp"
+#include "utils/flight_recorder.hpp"
 #include "zone.hpp"
+
+#include <systemd/sd-bus.h>
 
 #include <nlohmann/json.hpp>
 #include <sdbusplus/bus.hpp>
@@ -56,6 +59,9 @@ std::map<std::string,
          std::map<std::string, std::map<std::string, PropertyVariantType>>>
     Manager::_objects;
 std::unordered_map<std::string, PropertyVariantType> Manager::_parameters;
+std::unordered_map<std::string, TriggerActions> Manager::_parameterTriggers;
+
+const std::string Manager::dumpFile = "/tmp/fan_control_dump.json";
 
 Manager::Manager(const sdeventplus::Event& event) :
     _bus(util::SDBusPlus::getBus()), _event(event),
@@ -69,6 +75,7 @@ Manager::Manager(const sdeventplus::Event& event) :
 void Manager::sighupHandler(sdeventplus::source::Signal&,
                             const struct signalfd_siginfo*)
 {
+    FlightRecorder::instance().log("main", "SIGHUP received");
     // Save current set of available and active profiles
     std::map<configKey, std::unique_ptr<Profile>> profiles;
     profiles.swap(_profiles);
@@ -80,7 +87,7 @@ void Manager::sighupHandler(sdeventplus::source::Signal&,
         _loadAllowed = true;
         load();
     }
-    catch (std::runtime_error& re)
+    catch (const std::runtime_error& re)
     {
         // Restore saved available and active profiles
         _loadAllowed = false;
@@ -88,7 +95,68 @@ void Manager::sighupHandler(sdeventplus::source::Signal&,
         _activeProfiles.swap(activeProfiles);
         log<level::ERR>("Error reloading configs, no changes made",
                         entry("LOAD_ERROR=%s", re.what()));
+        FlightRecorder::instance().log(
+            "main", fmt::format("Error reloading configs, no changes made: {}",
+                                re.what()));
     }
+}
+
+void Manager::sigUsr1Handler(sdeventplus::source::Signal&,
+                             const struct signalfd_siginfo*)
+{
+    debugDumpEventSource = std::make_unique<sdeventplus::source::Defer>(
+        _event, std::bind(std::mem_fn(&Manager::dumpDebugData), this,
+                          std::placeholders::_1));
+}
+
+void Manager::dumpDebugData(sdeventplus::source::EventBase& /*source*/)
+{
+    json data;
+    FlightRecorder::instance().dump(data);
+    dumpCache(data);
+
+    std::for_each(_zones.begin(), _zones.end(), [&data](const auto& zone) {
+        data["zones"][zone.second->getName()] = zone.second->dump();
+    });
+
+    std::ofstream file{Manager::dumpFile};
+    if (!file)
+    {
+        log<level::ERR>("Could not open file for fan dump");
+        return;
+    }
+
+    file << std::setw(4) << data;
+
+    debugDumpEventSource.reset();
+}
+
+void Manager::dumpCache(json& data)
+{
+    auto& objects = data["objects"];
+    for (const auto& [path, interfaces] : _objects)
+    {
+        auto& interfaceJSON = objects[path];
+
+        for (const auto& [interface, properties] : interfaces)
+        {
+            auto& propertyJSON = interfaceJSON[interface];
+            for (const auto& [propName, propValue] : properties)
+            {
+                std::visit(
+                    [&obj = propertyJSON[propName]](auto&& val) { obj = val; },
+                    propValue);
+            }
+        }
+    }
+
+    auto& parameters = data["parameters"];
+    for (const auto& [name, value] : _parameters)
+    {
+        std::visit([&obj = parameters[name]](auto&& val) { obj = val; }, value);
+    }
+
+    data["services"] = _servTree;
 }
 
 void Manager::load()
@@ -123,8 +191,22 @@ void Manager::load()
             }
         }
 
-        // Load any events configured
-        auto events = getConfig<Event>(true, this, zones);
+        // Save all currently available groups, if any, then clear for reloading
+        auto groups = std::move(Event::getAllGroups(false));
+        Event::clearAllGroups();
+
+        std::map<configKey, std::unique_ptr<Event>> events;
+        try
+        {
+            // Load any events configured, including all the groups
+            events = getConfig<Event>(true, this, zones);
+        }
+        catch (const std::runtime_error& re)
+        {
+            // Restore saved set of all available groups for current events
+            Event::setAllGroups(std::move(groups));
+            throw re;
+        }
 
         // Enable zones
         _zones = std::move(zones);
@@ -157,6 +239,16 @@ void Manager::powerStateChanged(bool powerStateOn)
         std::for_each(_zones.begin(), _zones.end(), [](const auto& entry) {
             entry.second->setTarget(entry.second->getPoweronTarget());
         });
+
+        // Tell events to run their power on triggers
+        std::for_each(_events.begin(), _events.end(),
+                      [](const auto& entry) { entry.second->powerOn(); });
+    }
+    else
+    {
+        // Tell events to run their power off triggers
+        std::for_each(_events.begin(), _events.end(),
+                      [](const auto& entry) { entry.second->powerOff(); });
     }
 }
 
@@ -220,6 +312,29 @@ bool Manager::hasOwner(const std::string& path, const std::string& intf)
     }
     // Interface not found in cache, therefore owner missing
     return false;
+}
+
+void Manager::setOwner(const std::string& serv, bool hasOwner)
+{
+    // Update owner state on all entries of `serv`
+    for (auto& itPath : _servTree)
+    {
+        auto itServ = itPath.second.find(serv);
+        if (itServ != itPath.second.end())
+        {
+            itServ->second.first = hasOwner;
+
+            // Remove associated interfaces from object cache when service no
+            // longer has an owner
+            if (!hasOwner && _objects.find(itPath.first) != _objects.end())
+            {
+                for (auto& intf : itServ->second.second)
+                {
+                    _objects[itPath.first].erase(intf);
+                }
+            }
+        }
+    }
 }
 
 void Manager::setOwner(const std::string& path, const std::string& serv,
@@ -327,8 +442,10 @@ void Manager::addServices(const std::string& intf, int32_t depth)
         {
             // Path not found in cache
             auto intfs = {intf};
-            _servTree[itPath.first] = {
-                {itPath.second.begin()->first, std::make_pair(true, intfs)}};
+            for (const auto& [servName, servIntfs] : itPath.second)
+            {
+                _servTree[itPath.first][servName] = std::make_pair(true, intfs);
+            }
         }
     }
 }
@@ -386,6 +503,21 @@ std::vector<std::string> Manager::getPaths(const std::string& serv,
     return paths;
 }
 
+void Manager::insertFilteredObjects(ManagedObjects& ref)
+{
+    for (auto& [path, pathMap] : ref)
+    {
+        for (auto& [intf, intfMap] : pathMap)
+        {
+            // for each property on this path+interface
+            for (auto& [prop, value] : intfMap)
+            {
+                setProperty(path, intf, prop, value);
+            }
+        }
+    }
+}
+
 void Manager::addObjects(const std::string& path, const std::string& intf,
                          const std::string& prop)
 {
@@ -405,58 +537,22 @@ void Manager::addObjects(const std::string& path, const std::string& intf,
     {
         // No object manager interface provided by service?
         // Attempt to retrieve property directly
-        auto variant = util::SDBusPlus::getPropertyVariant<PropertyVariantType>(
+        auto value = util::SDBusPlus::getPropertyVariant<PropertyVariantType>(
             _bus, service, path, intf, prop);
-        _objects[path][intf][prop] = variant;
+
+        setProperty(path, intf, prop, value);
         return;
     }
 
     for (const auto& objMgrPath : objMgrPaths)
     {
         // Get all managed objects of service
+        // want to filter here...
         auto objects = util::SDBusPlus::getManagedObjects<PropertyVariantType>(
             _bus, service, objMgrPath);
 
-        // Add what's returned to the cache of objects
-        for (auto& object : objects)
-        {
-            auto itPath = _objects.find(object.first);
-            if (itPath != _objects.end())
-            {
-                // Path found in cache
-                for (auto& interface : itPath->second)
-                {
-                    auto itIntf = itPath->second.find(interface.first);
-                    if (itIntf != itPath->second.end())
-                    {
-                        // Interface found in cache
-                        for (auto& property : itIntf->second)
-                        {
-                            auto itProp = itIntf->second.find(property.first);
-                            if (itProp != itIntf->second.end())
-                            {
-                                // Property found, update value
-                                itProp->second = property.second;
-                            }
-                            else
-                            {
-                                itIntf->second.insert(property);
-                            }
-                        }
-                    }
-                    else
-                    {
-                        // Interface not found in cache
-                        itPath->second.insert(interface);
-                    }
-                }
-            }
-            else
-            {
-                // Path not found in cache
-                _objects.insert(object);
-            }
-        }
+        // insert all objects but remove any NaN values
+        insertFilteredObjects(objects);
     }
 }
 
@@ -483,6 +579,25 @@ const std::optional<PropertyVariantType>
     return std::nullopt;
 }
 
+void Manager::setProperty(const std::string& path, const std::string& intf,
+                          const std::string& prop, PropertyVariantType value)
+{
+    // filter NaNs out of the cache
+    if (PropertyContainsNan(value))
+    {
+        // dont use operator [] if paths dont exist
+        if (_objects.find(path) != _objects.end() &&
+            _objects[path].find(intf) != _objects[path].end())
+        {
+            _objects[path][intf].erase(prop);
+        }
+    }
+    else
+    {
+        _objects[path][intf][prop] = std::move(value);
+    }
+}
+
 void Manager::addTimer(const TimerType type,
                        const std::chrono::microseconds interval,
                        std::unique_ptr<TimerPkg> pkg)
@@ -506,8 +621,77 @@ void Manager::addTimer(const TimerType type,
     _timers.emplace_back(std::move(dataPtr), std::move(timer));
 }
 
+void Manager::addGroup(const Group& group)
+{
+    std::string service = "";
+    std::set<std::string> grpServices;
+    for (const auto& member : group.getMembers())
+    {
+        try
+        {
+            service = group.getService();
+            if (service.empty())
+            {
+                service = getService(member, group.getInterface());
+            }
+
+            auto objMgrPaths =
+                getPaths(service, "org.freedesktop.DBus.ObjectManager");
+
+            // Look for the ObjectManager as an ancestor from the member.
+            auto hasObjMgr =
+                std::any_of(objMgrPaths.begin(), objMgrPaths.end(),
+                            [&member](const auto& path) {
+                                return member.find(path) != std::string::npos;
+                            });
+
+            if (!hasObjMgr)
+            {
+                // No object manager interface provided for group member
+                // Attempt to retrieve group member property directly
+                auto value =
+                    util::SDBusPlus::getPropertyVariant<PropertyVariantType>(
+                        _bus, service, member, group.getInterface(),
+                        group.getProperty());
+
+                setProperty(member, group.getInterface(), group.getProperty(),
+                            value);
+                continue;
+            }
+
+            if (grpServices.find(service) == grpServices.end())
+            {
+                grpServices.insert(service);
+                for (const auto& objMgrPath : objMgrPaths)
+                {
+                    // Get all managed objects from the service
+                    auto objects =
+                        util::SDBusPlus::getManagedObjects<PropertyVariantType>(
+                            _bus, service, objMgrPath);
+
+                    // Insert objects into cache
+                    insertFilteredObjects(objects);
+                }
+            }
+        }
+        catch (const util::DBusError&)
+        {
+            // No service or property found for group member with the
+            // group's configured interface
+            continue;
+        }
+    }
+}
+
 void Manager::timerExpired(TimerData& data)
 {
+    if (std::get<bool>(data.second))
+    {
+        const auto& groups = std::get<const std::vector<Group>&>(data.second);
+        std::for_each(groups.begin(), groups.end(),
+                      [this](const auto& group) { addGroup(group); });
+    }
+
     auto& actions =
         std::get<std::vector<std::unique_ptr<ActionBase>>&>(data.second);
     // Perform the actions in the timer data
@@ -531,9 +715,9 @@ void Manager::timerExpired(TimerData& data)
 }
 
 void Manager::handleSignal(sdbusplus::message::message& msg,
-                           const std::vector<SignalPkg>& pkgs)
+                           const std::vector<SignalPkg>* pkgs)
 {
-    for (auto& pkg : pkgs)
+    for (auto& pkg : *pkgs)
     {
         // Handle the signal callback and only run the actions if the handler
         // updated the cache for the given SignalObject
@@ -541,9 +725,18 @@ void Manager::handleSignal(sdbusplus::message::message& msg,
                                          *this))
         {
             // Perform the actions in the handler package
-            auto& actions = std::get<SignalActions>(pkg);
-            std::for_each(actions.begin(), actions.end(),
-                          [](auto& action) { action.get()->run(); });
+            auto& actions = std::get<TriggerActions>(pkg);
+            std::for_each(actions.begin(), actions.end(), [](auto& action) {
+                if (action.get())
+                {
+                    action.get()->run();
+                }
+            });
+        }
+        // Only rewind message when not last package
+        if (&pkg != &pkgs->back())
+        {
+            sd_bus_message_rewind(msg.get(), true);
         }
     }
 }
@@ -575,6 +768,38 @@ void Manager::setProfiles()
         {
             _activeProfiles.emplace_back(profile.first.first);
         }
+    }
+}
+
+void Manager::addParameterTrigger(
+    const std::string& name, std::vector<std::unique_ptr<ActionBase>>& actions)
+{
+    auto it = _parameterTriggers.find(name);
+    if (it != _parameterTriggers.end())
+    {
+        std::for_each(actions.begin(), actions.end(),
+                      [&actList = it->second](auto& action) {
+                          actList.emplace_back(std::ref(action));
+                      });
+    }
+    else
+    {
+        TriggerActions triggerActions;
+        std::for_each(actions.begin(), actions.end(),
+                      [&triggerActions](auto& action) {
+                          triggerActions.emplace_back(std::ref(action));
+                      });
+        _parameterTriggers[name] = std::move(triggerActions);
+    }
+}
+
+void Manager::runParameterActions(const std::string& name)
+{
+    auto it = _parameterTriggers.find(name);
+    if (it != _parameterTriggers.end())
+    {
+        std::for_each(it->second.begin(), it->second.end(),
+                      [](auto& action) { action.get()->run(); });
     }
 }
 

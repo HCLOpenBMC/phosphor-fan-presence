@@ -37,6 +37,10 @@ namespace phosphor::fan::monitor
 
 using json = nlohmann::json;
 
+// Mapping from service name to sensor
+using SensorMapType =
+    std::map<std::string, std::set<std::shared_ptr<TachSensor>>>;
+
 class System
 {
   public:
@@ -109,11 +113,25 @@ class System
     }
 
     /**
-     * @brief Parses and populates the fan monitor trust groups and list of fans
+     * @brief tests the presence of Inventory and calls load() if present, else
+     *  waits for Inventory asynchronously and has a callback to load() when
+     * present
      */
     void start();
 
+    /**
+     * @brief Parses and populates the fan monitor trust groups and list of fans
+     */
+    void load();
+
   private:
+    /**
+     * @brief Callback from D-Bus when Inventory service comes online
+     *
+     * @param[in] msg - Service details.
+     */
+    void inventoryOnlineCb(sdbusplus::message::message& msg);
+
     /* The mode of fan monitor */
     Mode _mode;
 
@@ -125,6 +143,9 @@ class System
 
     /* Trust manager of trust groups */
     std::unique_ptr<phosphor::fan::trust::Manager> _trust;
+
+    /* match object to detect Inventory service */
+    std::unique_ptr<sdbusplus::bus::match::match> _inventoryMatch;
 
     /* List of fan objects to monitor */
     std::vector<std::unique_ptr<Fan>> _fans;
@@ -164,9 +185,14 @@ class System
     ThermalAlertObject _thermalAlert;
 
     /**
-     * @brief If start() has been called
+     * @brief The tach sensors D-Bus match objects
      */
-    bool _started = false;
+    std::vector<std::unique_ptr<sdbusplus::bus::match::match>> _sensorMatch;
+
+    /**
+     * @brief true if config files have been loaded
+     */
+    bool _loaded = false;
 
     /**
      * @brief Captures tach sensor data as JSON for use in
@@ -175,6 +201,13 @@ class System
      * @return json - The JSON data
      */
     json captureSensorData();
+
+    /**
+     * @brief creates a subscription (service->sensor) to take sensors
+     *        on/offline when D-Bus starts/stops updating values
+     *
+     */
+    void subscribeSensorsToServices();
 
     /**
      * @brief Retrieve the configured trust groups
@@ -214,6 +247,16 @@ class System
      * @param[in] fan - The fan to update the health map with
      */
     void updateFanHealth(const Fan& fan);
+
+    /**
+     * @brief callback when a tach sensor signal goes offline
+     *
+     * @param[in] msg - D-Bus message containing details (inc. service name)
+     *
+     * @param[in] sensorMap - map providing sensor access for each service
+     */
+    void tachSignalOffline(sdbusplus::message::message& msg,
+                           const SensorMapType& sensorMap);
 
     /**
      * @brief The function that runs when the power state changes

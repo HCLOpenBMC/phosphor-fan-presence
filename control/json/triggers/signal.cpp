@@ -49,168 +49,189 @@ void subscribe(const std::string& match, SignalPkg&& signalPkg,
     if (signalData.empty())
     {
         // Signal subscription doesnt exist, add signal package and subscribe
-        std::vector<SignalPkg> pkgs = {signalPkg};
-        std::vector<SignalPkg> dataPkgs =
-            std::vector<SignalPkg>(std::move(pkgs));
-        std::unique_ptr<sdbusplus::server::match::match> ptrMatch = nullptr;
-        // TODO(ibm-openbmc/#3195) - Filter signal subscriptions to objects
-        // owned by fan control?
+        std::unique_ptr<std::vector<SignalPkg>> pkgs =
+            std::make_unique<std::vector<SignalPkg>>();
+        pkgs->emplace_back(std::move(signalPkg));
+        std::unique_ptr<sdbusplus::bus::match_t> ptrMatch = nullptr;
         if (!match.empty())
         {
             // Subscribe to signal
-            ptrMatch = std::make_unique<sdbusplus::server::match::match>(
+            ptrMatch = std::make_unique<sdbusplus::bus::match_t>(
                 mgr->getBus(), match.c_str(),
                 std::bind(std::mem_fn(&Manager::handleSignal), &(*mgr),
-                          std::placeholders::_1, dataPkgs));
+                          std::placeholders::_1, pkgs.get()));
         }
-        signalData.emplace_back(std::move(dataPkgs), std::move(ptrMatch));
+        signalData.emplace_back(std::move(pkgs), std::move(ptrMatch));
     }
     else
     {
         // Signal subscription already exists
         // Only a single signal data entry tied to each match is supported
-        auto& pkgs = std::get<std::vector<SignalPkg>>(signalData.front());
-        for (auto& pkg : pkgs)
+        auto& pkgs = std::get<std::unique_ptr<std::vector<SignalPkg>>>(
+            signalData.front());
+        auto sameSignal = false;
+        for (auto& pkg : *pkgs)
         {
             if (isSameSig(pkg))
             {
-                // Same signal expected, add action to be run when signal
-                // received
-                auto& pkgActions = std::get<SignalActions>(signalPkg);
-                auto& actions = std::get<SignalActions>(pkg);
-                // Only one action is given on the signal package passed in
-                actions.push_back(pkgActions.front());
-            }
-            else
-            {
-                // Expected signal differs, add signal package
-                pkgs.emplace_back(std::move(signalPkg));
+                // Same SignalObject signal to trigger event actions,
+                // add actions to be run when signal for SignalObject received
+                auto& pkgActions = std::get<TriggerActions>(signalPkg);
+                auto& actions = std::get<TriggerActions>(pkg);
+                actions.insert(actions.end(), pkgActions.begin(),
+                               pkgActions.end());
+                sameSignal = true;
+                break;
             }
         }
-    }
-}
-
-void propertiesChanged(Manager* mgr, const std::string& eventName,
-                       std::unique_ptr<ActionBase>& action)
-{
-    // Groups are optional, but a signal triggered event with no groups
-    // will do nothing since signals require a group
-    for (const auto& group : action->getGroups())
-    {
-        for (const auto& member : group.getMembers())
+        if (!sameSignal)
         {
-            // Setup property changed signal handler on the group member's
-            // property
-            const auto match =
-                rules::propertiesChanged(member, group.getInterface());
-            SignalPkg signalPkg = {Handlers::propertiesChanged,
-                                   SignalObject(std::cref(member),
-                                                std::cref(group.getInterface()),
-                                                std::cref(group.getProperty())),
-                                   SignalActions({action})};
-            auto isSameSig = [&prop = group.getProperty()](SignalPkg& pkg) {
-                auto& obj = std::get<SignalObject>(pkg);
-                return prop == std::get<Prop>(obj);
-            };
-
-            subscribe(match, std::move(signalPkg), isSameSig, mgr);
+            // Expected signal differs, add signal package
+            pkgs->emplace_back(std::move(signalPkg));
         }
     }
 }
 
-void interfacesAdded(Manager* mgr, const std::string& eventName,
-                     std::unique_ptr<ActionBase>& action)
+void propertiesChanged(Manager* mgr, const Group& group,
+                       TriggerActions& actions, const json&)
 {
     // Groups are optional, but a signal triggered event with no groups
     // will do nothing since signals require a group
-    for (const auto& group : action->getGroups())
+    for (const auto& member : group.getMembers())
     {
-        for (const auto& member : group.getMembers())
-        {
-            // Setup interfaces added signal handler on the group member
-            const auto match = rules::interfacesAdded(member);
-            SignalPkg signalPkg = {Handlers::interfacesAdded,
-                                   SignalObject(std::cref(member),
-                                                std::cref(group.getInterface()),
-                                                std::cref(group.getProperty())),
-                                   SignalActions({action})};
-            auto isSameSig = [&intf = group.getInterface()](SignalPkg& pkg) {
-                auto& obj = std::get<SignalObject>(pkg);
-                return intf == std::get<Intf>(obj);
-            };
+        // Setup property changed signal handler on the group member's
+        // property
+        const auto match =
+            rules::propertiesChanged(member, group.getInterface());
+        SignalPkg signalPkg = {Handlers::propertiesChanged,
+                               SignalObject(std::cref(member),
+                                            std::cref(group.getInterface()),
+                                            std::cref(group.getProperty())),
+                               actions};
+        auto isSameSig = [&prop = group.getProperty()](SignalPkg& pkg) {
+            auto& obj = std::get<SignalObject>(pkg);
+            return prop == std::get<Prop>(obj);
+        };
 
-            subscribe(match, std::move(signalPkg), isSameSig, mgr);
-        }
+        subscribe(match, std::move(signalPkg), isSameSig, mgr);
     }
 }
 
-void interfacesRemoved(Manager* mgr, const std::string& eventName,
-                       std::unique_ptr<ActionBase>& action)
+void interfacesAdded(Manager* mgr, const Group& group, TriggerActions& actions,
+                     const json&)
 {
     // Groups are optional, but a signal triggered event with no groups
     // will do nothing since signals require a group
-    for (const auto& group : action->getGroups())
+    for (const auto& member : group.getMembers())
     {
-        for (const auto& member : group.getMembers())
-        {
-            // Setup interfaces added signal handler on the group member
-            const auto match = rules::interfacesRemoved(member);
-            SignalPkg signalPkg = {Handlers::interfacesRemoved,
-                                   SignalObject(std::cref(member),
-                                                std::cref(group.getInterface()),
-                                                std::cref(group.getProperty())),
-                                   SignalActions({action})};
-            auto isSameSig = [&intf = group.getInterface()](SignalPkg& pkg) {
-                auto& obj = std::get<SignalObject>(pkg);
-                return intf == std::get<Intf>(obj);
-            };
+        // Setup interfaces added signal handler on the group member
+        const auto match =
+            rules::interfacesAdded() + rules::argNpath(0, member);
+        SignalPkg signalPkg = {Handlers::interfacesAdded,
+                               SignalObject(std::cref(member),
+                                            std::cref(group.getInterface()),
+                                            std::cref(group.getProperty())),
+                               actions};
+        auto isSameSig = [&intf = group.getInterface()](SignalPkg& pkg) {
+            auto& obj = std::get<SignalObject>(pkg);
+            return intf == std::get<Intf>(obj);
+        };
 
-            subscribe(match, std::move(signalPkg), isSameSig, mgr);
-        }
+        subscribe(match, std::move(signalPkg), isSameSig, mgr);
     }
 }
 
-void nameOwnerChanged(Manager* mgr, const std::string& eventName,
-                      std::unique_ptr<ActionBase>& action)
+void interfacesRemoved(Manager* mgr, const Group& group,
+                       TriggerActions& actions, const json&)
 {
     // Groups are optional, but a signal triggered event with no groups
     // will do nothing since signals require a group
-    for (const auto& group : action->getGroups())
+    for (const auto& member : group.getMembers())
     {
-        for (const auto& member : group.getMembers())
+        // Setup interfaces added signal handler on the group member
+        const auto match = rules::interfacesRemoved(member);
+        SignalPkg signalPkg = {Handlers::interfacesRemoved,
+                               SignalObject(std::cref(member),
+                                            std::cref(group.getInterface()),
+                                            std::cref(group.getProperty())),
+                               actions};
+        auto isSameSig = [&intf = group.getInterface()](SignalPkg& pkg) {
+            auto& obj = std::get<SignalObject>(pkg);
+            return intf == std::get<Intf>(obj);
+        };
+
+        subscribe(match, std::move(signalPkg), isSameSig, mgr);
+    }
+}
+
+void nameOwnerChanged(Manager* mgr, const Group& group, TriggerActions& actions,
+                      const json&)
+{
+    std::vector<std::string> grpServices;
+    // Groups are optional, but a signal triggered event with no groups
+    // will do nothing since signals require a group
+    for (const auto& member : group.getMembers())
+    {
+        auto serv = group.getService();
+        if (serv.empty())
         {
-            auto serv = Manager::getService(member, group.getInterface());
-            if (!serv.empty())
+            serv = Manager::getService(member, group.getInterface());
+        }
+        if (!serv.empty())
+        {
+            // No need to re-subscribe to the same service's nameOwnerChanged
+            // signal when a prior group member provided by the same service
+            // already did the subscription
+            if (std::find(grpServices.begin(), grpServices.end(), serv) ==
+                grpServices.end())
             {
                 // Setup name owner changed signal handler on the group
                 // member's service
                 const auto match = rules::nameOwnerChanged(serv);
-                SignalPkg signalPkg = {
-                    Handlers::nameOwnerChanged,
-                    SignalObject(std::cref(member),
-                                 std::cref(group.getInterface()),
-                                 std::cref(group.getProperty())),
-                    SignalActions({action})};
+                SignalPkg signalPkg = {Handlers::nameOwnerChanged,
+                                       SignalObject(), actions};
                 // If signal match already exists, then the service will be the
                 // same so add action to be run
                 auto isSameSig = [](SignalPkg& pkg) { return true; };
 
                 subscribe(match, std::move(signalPkg), isSameSig, mgr);
-            }
-            else
-            {
-                // Unable to construct nameOwnerChanged match string
-                // Path and/or interface configured does not exist on dbus yet?
-                // TODO How to handle this? Create timer to keep checking for
-                // service to appear? When to stop checking?
-                log<level::ERR>(
-                    fmt::format(
-                        "Event '{}' will not be triggered by name owner "
-                        "changed signals from service of path {}, interface {}",
-                        eventName, member, group.getInterface())
-                        .c_str());
+                grpServices.emplace_back(serv);
             }
         }
+        else
+        {
+            // Unable to construct nameOwnerChanged match string
+            // Path and/or interface configured does not exist on dbus yet?
+            // TODO How to handle this? Create timer to keep checking for
+            // service to appear? When to stop checking?
+            log<level::ERR>(
+                fmt::format("Events will not be triggered by name owner changed"
+                            "signals from service of path {}, interface {}",
+                            member, group.getInterface())
+                    .c_str());
+        }
+    }
+}
+
+void member(Manager* mgr, const Group& group, TriggerActions& actions,
+            const json&)
+{
+    // No SignalObject required to associate to this signal
+    SignalPkg signalPkg = {Handlers::member, SignalObject(), actions};
+    // If signal match already exists, then the member signal will be the
+    // same so add action to be run
+    auto isSameSig = [](SignalPkg& pkg) { return true; };
+
+    // Groups are optional, but a signal triggered event with no groups
+    // will do nothing since signals require a group
+    for (const auto& member : group.getMembers())
+    {
+        // Subscribe for signal from each group member
+        const auto match =
+            rules::type::signal() + rules::member(group.getProperty()) +
+            rules::path(member) + rules::interface(group.getInterface());
+
+        subscribe(match, std::move(signalPkg), isSameSig, mgr);
     }
 }
 
@@ -240,13 +261,19 @@ enableTrigger triggerSignal(const json& jsonObj, const std::string& eventName,
         throw std::runtime_error(msg.c_str());
     }
 
-    return [subscriber = std::move(subscriber)](
-               const std::string& eventName, Manager* mgr,
-               std::vector<std::unique_ptr<ActionBase>>& actions) {
-        for (auto& action : actions)
+    return [subscriber = std::move(subscriber),
+            jsonObj](const std::string& eventName, Manager* mgr,
+                     const std::vector<Group>& groups,
+                     std::vector<std::unique_ptr<ActionBase>>& actions) {
+        TriggerActions signalActions;
+        std::for_each(actions.begin(), actions.end(),
+                      [&signalActions](auto& action) {
+                          signalActions.emplace_back(std::ref(action));
+                      });
+        for (const auto& group : groups)
         {
-            // Call signal subscriber for each group in the action
-            subscriber->second(mgr, eventName, action);
+            // Call signal subscriber for each group
+            subscriber->second(mgr, group, signalActions, jsonObj);
         }
     };
 }

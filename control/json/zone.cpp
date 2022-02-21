@@ -1,5 +1,5 @@
 /**
- * Copyright © 2020 IBM Corporation
+ * Copyright © 2022 IBM Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 #include "zone.hpp"
 
+#include "../utils/flight_recorder.hpp"
 #include "dbus_zone.hpp"
 #include "fan.hpp"
 #include "sdbusplus.hpp"
@@ -143,18 +144,165 @@ void Zone::setTarget(uint64_t target)
     }
 }
 
-void Zone::setActiveAllow(const std::string& ident, bool isActiveAllow)
+void Zone::lockFanTarget(const std::string& fname, uint64_t target)
 {
-    _active[ident] = isActiveAllow;
-    if (!isActiveAllow)
+    auto fanItr =
+        std::find_if(_fans.begin(), _fans.end(), [&fname](const auto& fan) {
+            return fan->getName() == fname;
+        });
+
+    if (_fans.end() != fanItr)
     {
-        _isActive = false;
+        (*fanItr)->lockTarget(target);
     }
     else
     {
-        // Check all entries are set to allow active fan control
-        auto actPred = [](const auto& entry) { return entry.second; };
-        _isActive = std::all_of(_active.begin(), _active.end(), actPred);
+        log<level::DEBUG>(
+            fmt::format("Configured fan {} not found in zone {} to lock target",
+                        fname, getName())
+                .c_str());
+    }
+}
+
+void Zone::unlockFanTarget(const std::string& fname, uint64_t target)
+{
+    auto fanItr =
+        std::find_if(_fans.begin(), _fans.end(), [&fname](const auto& fan) {
+            return fan->getName() == fname;
+        });
+
+    if (_fans.end() != fanItr)
+    {
+        (*fanItr)->unlockTarget(target);
+
+        // attempt to resume Zone target on fan
+        (*fanItr)->setTarget(getTarget());
+    }
+    else
+    {
+        log<level::DEBUG>(
+            fmt::format(
+                "Configured fan {} not found in zone {} to unlock target",
+                fname, getName())
+                .c_str());
+    }
+}
+
+void Zone::setTargetHold(const std::string& ident, uint64_t target, bool hold)
+{
+    using namespace std::string_literals;
+
+    if (!hold)
+    {
+        size_t removed = _targetHolds.erase(ident);
+        if (removed)
+        {
+            FlightRecorder::instance().log(
+                "zone-target"s + getName(),
+                fmt::format("{} is removing target hold", ident));
+        }
+    }
+    else
+    {
+        if (!((_targetHolds.find(ident) != _targetHolds.end()) &&
+              (_targetHolds[ident] == target)))
+        {
+            FlightRecorder::instance().log(
+                "zone-target"s + getName(),
+                fmt::format("{} is setting target hold to {}", ident, target));
+        }
+        _targetHolds[ident] = target;
+        _isActive = false;
+    }
+
+    auto itHoldMax = std::max_element(_targetHolds.begin(), _targetHolds.end(),
+                                      [](const auto& aHold, const auto& bHold) {
+                                          return aHold.second < bHold.second;
+                                      });
+    if (itHoldMax == _targetHolds.end())
+    {
+        _isActive = true;
+    }
+    else
+    {
+        if (_target != itHoldMax->second)
+        {
+            FlightRecorder::instance().log(
+                "zone-target"s + getName(),
+                fmt::format("Settings fans to target hold of {}",
+                            itHoldMax->second));
+        }
+
+        _target = itHoldMax->second;
+        for (auto& fan : _fans)
+        {
+            fan->setTarget(_target);
+        }
+    }
+}
+
+void Zone::setFloorHold(const std::string& ident, uint64_t target, bool hold)
+{
+    using namespace std::string_literals;
+
+    if (!hold)
+    {
+        size_t removed = _floorHolds.erase(ident);
+        if (removed)
+        {
+            FlightRecorder::instance().log(
+                "zone-floor"s + getName(),
+                fmt::format("{} is removing floor hold", ident));
+        }
+    }
+    else
+    {
+        if (!((_floorHolds.find(ident) != _floorHolds.end()) &&
+              (_floorHolds[ident] == target)))
+        {
+            FlightRecorder::instance().log(
+                "zone-floor"s + getName(),
+                fmt::format("{} is setting floor hold to {}", ident, target));
+        }
+        _floorHolds[ident] = target;
+    }
+
+    if (!std::all_of(_floorChange.begin(), _floorChange.end(),
+                     [](const auto& entry) { return entry.second; }))
+    {
+        return;
+    }
+
+    auto itHoldMax = std::max_element(_floorHolds.begin(), _floorHolds.end(),
+                                      [](const auto& aHold, const auto& bHold) {
+                                          return aHold.second < bHold.second;
+                                      });
+    if (itHoldMax == _floorHolds.end())
+    {
+        if (_floor != _defaultFloor)
+        {
+            FlightRecorder::instance().log(
+                "zone-floor"s + getName(),
+                fmt::format("No set floor exists, using default floor",
+                            _defaultFloor));
+        }
+        _floor = _defaultFloor;
+    }
+    else
+    {
+        if (_floor != itHoldMax->second)
+        {
+            FlightRecorder::instance().log(
+                "zone-floor"s + getName(),
+                fmt::format("Setting new floor to {}", itHoldMax->second));
+        }
+        _floor = itHoldMax->second;
+    }
+
+    // Floor above target, update target to floor
+    if (_target < _floor)
+    {
+        requestIncrease(_floor - _target);
     }
 }
 
@@ -267,23 +415,13 @@ bool Zone::isPersisted(const std::string& intf, const std::string& prop) const
 
 void Zone::setPowerOnTarget(const json& jsonObj)
 {
-    // TODO Remove "full_speed" after configs replaced with "poweron_target"
-    if (!jsonObj.contains("full_speed") && !jsonObj.contains("poweron_target"))
+    if (!jsonObj.contains("poweron_target"))
     {
         auto msg = "Missing required zone's poweron target";
         log<level::ERR>(msg, entry("JSON=%s", jsonObj.dump().c_str()));
         throw std::runtime_error(msg);
     }
-    if (jsonObj.contains("full_speed"))
-    {
-        _poweronTarget = jsonObj["full_speed"].get<uint64_t>();
-    }
-    else
-    {
-        _poweronTarget = jsonObj["poweron_target"].get<uint64_t>();
-    }
-    // Start with the current target set as the poweron target
-    _target = _poweronTarget;
+    _poweronTarget = jsonObj["poweron_target"].get<uint64_t>();
 }
 
 void Zone::setInterfaces(const json& jsonObj)
@@ -353,6 +491,31 @@ void Zone::setInterfaces(const json& jsonObj)
                 propFunc->second(property, persist));
         }
     }
+}
+
+json Zone::dump() const
+{
+    json output;
+
+    output["active"] = _isActive;
+    output["floor"] = _floor;
+    output["ceiling"] = _ceiling;
+    output["target"] = _target;
+    output["increase_delta"] = _incDelta;
+    output["decrease_delta"] = _decDelta;
+    output["power_on_target"] = _poweronTarget;
+    output["default_ceiling"] = _defaultCeiling;
+    output["default_floor"] = _defaultFloor;
+    output["increase_delay"] = _incDelay.count();
+    output["decrease_interval"] = _decInterval.count();
+    output["requested_target_base"] = _requestTargetBase;
+    output["floor_change"] = _floorChange;
+    output["decrease_allowed"] = _decAllowed;
+    output["persisted_props"] = _propsPersisted;
+    output["target_holds"] = _targetHolds;
+    output["floor_holds"] = _floorHolds;
+
+    return output;
 }
 
 /**

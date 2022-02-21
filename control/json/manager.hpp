@@ -23,6 +23,7 @@
 #include "power_state.hpp"
 #include "profile.hpp"
 #include "sdbusplus.hpp"
+#include "utils/flight_recorder.hpp"
 #include "zone.hpp"
 
 #include <fmt/format.h>
@@ -32,6 +33,7 @@
 #include <sdbusplus/bus.hpp>
 #include <sdbusplus/server/manager.hpp>
 #include <sdeventplus/event.hpp>
+#include <sdeventplus/source/event.hpp>
 #include <sdeventplus/utility/timer.hpp>
 
 #include <chrono>
@@ -63,9 +65,12 @@ enum class TimerType
  *      std::string = Timer package unique identifier
  *      std::vector<std::unique_ptr<ActionBase>> = List of pointers to actions
  * that run when the timer expires
+ *      const std::vector<Group> = List of groups
+ *      bool = If groups should be preloaded before actions are run
  */
 using TimerPkg =
-    std::tuple<std::string, std::vector<std::unique_ptr<ActionBase>>&>;
+    std::tuple<std::string, std::vector<std::unique_ptr<ActionBase>>&,
+               const std::vector<Group>&, bool>;
 /**
  * Data associated with a running timer that's used when it expires
  * Pair constructed of:
@@ -82,7 +87,7 @@ constexpr auto Intf = 1;
 constexpr auto Prop = 2;
 using SignalObject = std::tuple<std::string, std::string, std::string>;
 /* Dbus signal actions */
-using SignalActions =
+using TriggerActions =
     std::vector<std::reference_wrapper<std::unique_ptr<ActionBase>>>;
 /**
  * Signal handler function that handles parsing a signal's message for a
@@ -95,18 +100,39 @@ using SignalHandler = std::function<bool(sdbusplus::message::message&,
  * Tuple constructed of:
  *     SignalHandler = Signal handler function
  *     SignalObject = Dbus signal object
- *     SignalActions = List of actions that are run when the signal is received
+ *     TriggerActions = List of actions that are run when the signal is received
  */
-using SignalPkg = std::tuple<SignalHandler, SignalObject, SignalActions>;
+using SignalPkg = std::tuple<SignalHandler, SignalObject, TriggerActions>;
 /**
  * Data associated to a subscribed signal
  * Tuple constructed of:
- *     std::vector<SignalPkg> = List of the signal's packages
- *     std::unique_ptr<sdbusplus::server::match::match> =
+ *     std::unique_ptr<std::vector<SignalPkg>> =
+ *         Pointer to list of the signal's packages
+ *     std::unique_ptr<sdbusplus::bus::match_t> =
  *         Pointer to match holding the subscription to a signal
  */
-using SignalData = std::tuple<std::vector<SignalPkg>,
-                              std::unique_ptr<sdbusplus::server::match::match>>;
+using SignalData = std::tuple<std::unique_ptr<std::vector<SignalPkg>>,
+                              std::unique_ptr<sdbusplus::bus::match_t>>;
+
+/**
+ * Package of data from a D-Bus call to get managed objects
+ * Tuple constructed of:
+ *     std::map<Path,            // D-Bus Path
+ *       std::map<Intf,          // D-Bus Interface
+ *         std::map<Property,    // D-Bus Property
+ *         std::variant>>>       // Variant value of that property
+ */
+using Path_v = sdbusplus::message::object_path;
+using Intf_v = std::string;
+using Prop_v = std::string;
+using ManagedObjects =
+    std::map<Path_v, std::map<Intf_v, std::map<Prop_v, PropertyVariantType>>>;
+
+/**
+ * Actions to run when a parameter trigger runs.
+ */
+using ParamTriggerData = std::vector<
+    std::reference_wrapper<const std::vector<std::unique_ptr<ActionBase>>>>;
 
 /**
  * @class Manager - Represents the fan control manager's configuration
@@ -146,6 +172,13 @@ class Manager
                        const struct signalfd_siginfo*);
 
     /**
+     * @brief Callback function to handle receiving a USR1 signal to dump
+     * the flight recorder.
+     */
+    void sigUsr1Handler(sdeventplus::source::Signal&,
+                        const struct signalfd_siginfo*);
+
+    /**
      * @brief Get the active profiles of the system where an empty list
      * represents that only configuration entries without a profile defined will
      * be loaded.
@@ -176,6 +209,9 @@ class Manager
                                          T::confFileName, isOptional);
         if (!confFile.empty())
         {
+            FlightRecorder::instance().log(
+                "main", fmt::format("Loading configuration from {}",
+                                    confFile.string()));
             for (const auto& entry : fan::JsonConfig::load(confFile))
             {
                 if (entry.contains("profiles"))
@@ -211,6 +247,9 @@ class Manager
                 fmt::format("Configuration({}) loaded successfully",
                             T::confFileName)
                     .c_str());
+            FlightRecorder::instance().log(
+                "main", fmt::format("Configuration({}) loaded successfully",
+                                    T::confFileName));
         }
         return config;
     }
@@ -236,6 +275,15 @@ class Manager
      * interface
      */
     static bool hasOwner(const std::string& path, const std::string& intf);
+
+    /**
+     * @brief Sets the dbus service owner state for all entries in the _servTree
+     * cache and removes associated objects from the _objects cache
+     *
+     * @param[in] serv - Dbus service name
+     * @param[in] hasOwner - Dbus service owner state
+     */
+    void setOwner(const std::string& serv, bool hasOwner);
 
     /**
      * @brief Sets the dbus service owner state of a given object
@@ -327,10 +375,7 @@ class Manager
      * @param[in] value - Dbus object's property value
      */
     void setProperty(const std::string& path, const std::string& intf,
-                     const std::string& prop, PropertyVariantType value)
-    {
-        _objects[path][intf][prop] = std::move(value);
-    }
+                     const std::string& prop, PropertyVariantType value);
 
     /**
      * @brief Remove an object's interface
@@ -401,7 +446,7 @@ class Manager
      * @param[in] pkgs - Signal packages associated to the signal being handled
      */
     void handleSignal(sdbusplus::message::message& msg,
-                      const std::vector<SignalPkg>& pkgs);
+                      const std::vector<SignalPkg>* pkgs);
 
     /**
      * @brief Get the sdbusplus bus object
@@ -434,13 +479,35 @@ class Manager
     /**
      * @brief Sets a value in the parameter map.
      *
+     * If it's a std::nullopt, it will be deleted instead.
+     *
      * @param[in] name - The parameter name
      * @param[in] value - The parameter value
      */
     static void setParameter(const std::string& name,
-                             const PropertyVariantType& value)
+                             const std::optional<PropertyVariantType>& value)
     {
-        _parameters[name] = value;
+        if (value)
+        {
+            auto it = _parameters.find(name);
+            auto changed = (it == _parameters.end()) ||
+                           ((it != _parameters.end()) && it->second != *value);
+            _parameters[name] = *value;
+
+            if (changed)
+            {
+                runParameterActions(name);
+            }
+        }
+        else
+        {
+            size_t deleted = _parameters.erase(name);
+
+            if (deleted)
+            {
+                runParameterActions(name);
+            }
+        }
     }
 
     /**
@@ -463,16 +530,47 @@ class Manager
     }
 
     /**
-     * @brief Deletes a parameter from the parameter map
+     * @brief Runs the actions registered to a parameter
+     *        trigger with this name.
      *
      * @param[in] name - The parameter name
      */
-    static void deleteParameter(const std::string& name)
-    {
-        _parameters.erase(name);
-    }
+    static void runParameterActions(const std::string& name);
+
+    /**
+     * @brief Adds a parameter trigger
+     *
+     * @param[in] name - The parameter name
+     * @param[in] actions - The actions to run on the trigger
+     */
+    static void
+        addParameterTrigger(const std::string& name,
+                            std::vector<std::unique_ptr<ActionBase>>& actions);
+
+    /* The name of the dump file */
+    static const std::string dumpFile;
 
   private:
+    /**
+     * @brief Helper to detect when a property's double contains a NaN
+     * (not-a-number) value.
+     *
+     * @param[in] value - The property to test
+     */
+    static bool PropertyContainsNan(const PropertyVariantType& value)
+    {
+        return (std::holds_alternative<double>(value) &&
+                std::isnan(std::get<double>(value)));
+    }
+
+    /**
+     * @brief Insert managed objects into cache, but filter out properties
+     * containing unwanted NaN (not-a-number) values.
+     *
+     * @param[in] ref - The map of ManagedObjects to insert into cache
+     */
+    void insertFilteredObjects(ManagedObjects& ref);
+
     /* The sdbusplus bus object to use */
     sdbusplus::bus::bus& _bus;
 
@@ -518,12 +616,22 @@ class Manager
     /* List of events configured */
     std::map<configKey, std::unique_ptr<Event>> _events;
 
+    /* The sdeventplus wrapper around sd_event_add_defer to dump debug
+     * data from the event loop after the USR1 signal.  */
+    std::unique_ptr<sdeventplus::source::Defer> debugDumpEventSource;
+
     /**
      * @brief A map of parameter names and values that are something
      *        other than just D-Bus property values that other actions
      *        can set and use.
      */
     static std::unordered_map<std::string, PropertyVariantType> _parameters;
+
+    /**
+     * @brief Map of parameter names to the actions to run when their
+     *        values change.
+     */
+    static std::unordered_map<std::string, TriggerActions> _parameterTriggers;
 
     /**
      * @brief Callback for power state changes
@@ -568,6 +676,25 @@ class Manager
      * entries within the other configuration files.
      */
     void setProfiles();
+
+    /**
+     * @brief Callback from debugDumpEventSource to dump debug data
+     */
+    void dumpDebugData(sdeventplus::source::EventBase&);
+
+    /**
+     * @brief Dump the _objects, _servTree, and _parameters maps to JSON
+     *
+     * @param[out] data - The JSON that will be filled in
+     */
+    void dumpCache(json& data);
+
+    /**
+     * @brief Add a group to the cache dataset.
+     *
+     * @param[in] group - The group to add
+     */
+    void addGroup(const Group& group);
 };
 
 } // namespace phosphor::fan::control::json

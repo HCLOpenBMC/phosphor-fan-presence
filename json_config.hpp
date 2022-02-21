@@ -105,14 +105,24 @@ class JsonConfig
      */
     JsonConfig(std::function<void()> func) : _loadFunc(func)
     {
-        _match = std::make_unique<sdbusplus::server::match::match>(
+        std::vector<std::string> compatObjPaths;
+
+        _match = std::make_unique<sdbusplus::bus::match_t>(
             util::SDBusPlus::getBus(),
             sdbusplus::bus::match::rules::interfacesAdded() +
                 sdbusplus::bus::match::rules::sender(confCompatServ),
             std::bind(&JsonConfig::compatIntfAdded, this,
                       std::placeholders::_1));
 
-        auto compatObjPaths = getCompatObjPaths();
+        try
+        {
+            compatObjPaths = getCompatObjPaths();
+        }
+        catch (const util::DBusMethodError&)
+        {
+            // Compatible interface does not exist on any dbus object yet
+        }
+
         if (!compatObjPaths.empty())
         {
             for (auto& path : compatObjPaths)
@@ -135,7 +145,6 @@ class JsonConfig
                 }
             }
             _loadFunc();
-            _match.reset();
         }
         else
         {
@@ -147,7 +156,6 @@ class JsonConfig
             try
             {
                 _loadFunc();
-                _match.reset();
             }
             catch (const NoConfigFound&)
             {
@@ -273,7 +281,7 @@ class JsonConfig
                 // Enable ignoring `//` or `/* */` comments
                 jsonConf = json::parse(file, nullptr, true, true);
             }
-            catch (std::exception& e)
+            catch (const std::exception& e)
             {
                 log<level::ERR>(
                     fmt::format(
@@ -301,6 +309,16 @@ class JsonConfig
         return jsonConf;
     }
 
+    /**
+     * @brief Return the compatible values property
+     *
+     * @return const std::vector<std::string>& - The values
+     */
+    static const std::vector<std::string>& getCompatValues()
+    {
+        return _confCompatValues;
+    }
+
   private:
     /* Load function to call for a fan app to load its config file(s). */
     std::function<void()> _loadFunc;
@@ -309,7 +327,7 @@ class JsonConfig
      * @brief The interfacesAdded match that is used to wait
      *        for the IBMCompatibleSystem interface to show up.
      */
-    std::unique_ptr<sdbusplus::server::match::match> _match;
+    std::unique_ptr<sdbusplus::bus::match_t> _match;
 
     /**
      * @brief List of compatible values from the compatible interface

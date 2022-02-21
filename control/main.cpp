@@ -16,6 +16,7 @@
 #include "config.h"
 
 #ifndef CONTROL_USE_JSON
+#include "../utils/flight_recorder.hpp"
 #include "argument.hpp"
 #include "manager.hpp"
 #else
@@ -30,8 +31,20 @@
 #include <sdeventplus/source/signal.hpp>
 #include <stdplus/signal.hpp>
 
+#include <fstream>
+
 using namespace phosphor::fan::control;
 using namespace phosphor::logging;
+
+#ifdef CONTROL_USE_JSON
+void dumpFlightRecorder()
+{
+    nlohmann::json data;
+    phosphor::fan::control::json::FlightRecorder::instance().dump(data);
+    std::ofstream file{json::Manager::dumpFile};
+    file << std::setw(4) << data;
+}
+#endif
 
 int main(int argc, char* argv[])
 {
@@ -70,6 +83,8 @@ int main(int argc, char* argv[])
     try
     {
 #ifdef CONTROL_USE_JSON
+        phosphor::fan::control::json::FlightRecorder::instance().log("main",
+                                                                     "Startup");
         json::Manager manager(event);
 
         // Handle loading fan control's config file(s)
@@ -81,6 +96,13 @@ int main(int argc, char* argv[])
         sdeventplus::source::Signal signal(
             event, SIGHUP,
             std::bind(&json::Manager::sighupHandler, &manager,
+                      std::placeholders::_1, std::placeholders::_2));
+
+        // Enable SIGUSR1 handling to dump the flight recorder
+        stdplus::signal::block(SIGUSR1);
+        sdeventplus::source::Signal sigUsr1(
+            event, SIGUSR1,
+            std::bind(&json::Manager::sigUsr1Handler, &manager,
                       std::placeholders::_1, std::placeholders::_2));
 
         phosphor::fan::util::SDBusPlus::getBus().request_name(CONTROL_BUSNAME);
@@ -98,13 +120,13 @@ int main(int argc, char* argv[])
     }
     // Log the useful metadata on these exceptions and let the app
     // return 1 so it is restarted without a core dump.
-    catch (phosphor::fan::util::DBusServiceError& e)
+    catch (const phosphor::fan::util::DBusServiceError& e)
     {
         log<level::ERR>("Uncaught DBus service lookup failure exception",
                         entry("PATH=%s", e.path.c_str()),
                         entry("INTERFACE=%s", e.interface.c_str()));
     }
-    catch (phosphor::fan::util::DBusMethodError& e)
+    catch (const phosphor::fan::util::DBusMethodError& e)
     {
         log<level::ERR>("Uncaught DBus method failure exception",
                         entry("BUSNAME=%s", e.busName.c_str()),
@@ -112,7 +134,7 @@ int main(int argc, char* argv[])
                         entry("INTERFACE=%s", e.interface.c_str()),
                         entry("METHOD=%s", e.method.c_str()));
     }
-    catch (phosphor::fan::util::DBusPropertyError& e)
+    catch (const phosphor::fan::util::DBusPropertyError& e)
     {
         log<level::ERR>("Uncaught DBus property access failure exception",
                         entry("BUSNAME=%s", e.busName.c_str()),
@@ -120,6 +142,21 @@ int main(int argc, char* argv[])
                         entry("INTERFACE=%s", e.interface.c_str()),
                         entry("PROPERTY=%s", e.property.c_str()));
     }
+    catch (std::exception& e)
+    {
+#ifdef CONTROL_USE_JSON
+        phosphor::fan::control::json::FlightRecorder::instance().log(
+            "main", "Unexpected exception exit");
+        dumpFlightRecorder();
+#endif
+        throw;
+    }
+
+#ifdef CONTROL_USE_JSON
+    phosphor::fan::control::json::FlightRecorder::instance().log(
+        "main", "Abnormal exit");
+    dumpFlightRecorder();
+#endif
 
     return 1;
 }

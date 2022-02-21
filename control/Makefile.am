@@ -31,7 +31,8 @@ systemdsystemunit_DATA += \
 endif
 
 bin_PROGRAMS = \
-	phosphor-fan-control
+	phosphor-fan-control \
+	fanctl
 
 phosphor_fan_control_SOURCES = \
 	main.cpp
@@ -51,6 +52,18 @@ phosphor_fan_control_CXXFLAGS = \
 	${PHOSPHOR_DBUS_INTERFACES_CFLAGS} \
 	-flto
 
+fanctl_SOURCES = \
+	fanctl.cpp
+
+fanctl_LDADD = \
+	$(SDBUSPLUS_LIBS) \
+	$(FMT_LIBS)
+
+fanctl_CXXFLAGS = \
+	$(SDBUSPLUS_CFLAGS) \
+	-flto
+
+
 if WANT_JSON_CONTROL
 phosphor_fan_control_SOURCES += \
 	json/manager.cpp \
@@ -63,6 +76,7 @@ phosphor_fan_control_SOURCES += \
 	json/triggers/timer.cpp \
 	json/triggers/signal.cpp \
 	json/triggers/init.cpp \
+	json/triggers/parameter.cpp \
 	json/actions/default_floor.cpp \
 	json/actions/request_target_base.cpp \
 	json/actions/missing_owner_target.cpp \
@@ -72,7 +86,12 @@ phosphor_fan_control_SOURCES += \
 	json/actions/timer_based_actions.cpp \
 	json/actions/mapped_floor.cpp \
 	json/actions/set_parameter_from_group_max.cpp \
-	json/utils/modifier.cpp
+	json/actions/count_state_floor.cpp \
+	json/actions/get_managed_objects.cpp \
+	json/actions/pcie_card_floors.cpp \
+	json/utils/flight_recorder.cpp \
+	json/utils/modifier.cpp \
+	json/utils/pcie_card_metadata.cpp
 else
 phosphor_fan_control_SOURCES += \
 	argument.cpp \

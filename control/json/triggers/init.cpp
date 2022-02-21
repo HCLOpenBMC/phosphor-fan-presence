@@ -66,6 +66,7 @@ void getProperties(Manager* mgr, const Group& group)
 
 void nameHasOwner(Manager* mgr, const Group& group)
 {
+    bool hasOwner = false;
     std::string lastName = "";
     for (const auto& member : group.getMembers())
     {
@@ -73,19 +74,26 @@ void nameHasOwner(Manager* mgr, const Group& group)
         auto intf = group.getInterface();
         try
         {
-            servName = mgr->getService(member, intf);
-            if (!servName.empty() && lastName != servName)
+            servName = group.getService();
+            if (servName.empty())
             {
-                // Member not provided by same service as last group member
-                lastName = servName;
-                auto hasOwner = util::SDBusPlus::callMethodAndRead<bool>(
-                    mgr->getBus(), "org.freedesktop.DBus",
-                    "/org/freedesktop/DBus", "org.freedesktop.DBus",
-                    "NameHasOwner", servName);
+                servName = mgr->getService(member, intf);
+            }
+            if (!servName.empty())
+            {
+                if (lastName != servName)
+                {
+                    // Member not provided by same service as last group member
+                    lastName = servName;
+                    hasOwner = util::SDBusPlus::callMethodAndRead<bool>(
+                        mgr->getBus(), "org.freedesktop.DBus",
+                        "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                        "NameHasOwner", servName);
+                }
                 // Update service name owner state of group object
                 mgr->setOwner(member, servName, intf, hasOwner);
             }
-            if (servName.empty())
+            else
             {
                 // Path and/or interface configured does not exist on dbus?
                 // TODO How to handle this? Create timer to keep checking for
@@ -102,18 +110,18 @@ void nameHasOwner(Manager* mgr, const Group& group)
             if (!servName.empty())
             {
                 // Failed to get service name owner state
-                mgr->setOwner(member, servName, intf, false);
+                hasOwner = false;
+                mgr->setOwner(member, servName, intf, hasOwner);
             }
             else
             {
                 // Path and/or interface configured does not exist on dbus?
                 // TODO How to handle this? Create timer to keep checking for
                 // object/service to appear? When to stop checking?
-                log<level::ERR>(
-                    fmt::format(
-                        "Unable to get service name for path {}, interface {}",
-                        member, intf)
-                        .c_str());
+                log<level::ERR>(fmt::format("Unable to get service({}) owner "
+                                            "state for path {}, interface {}",
+                                            servName, member, intf)
+                                    .c_str());
                 throw dme;
             }
         }
@@ -132,12 +140,14 @@ enableTrigger triggerInit(const json& jsonObj, const std::string& eventName,
         handler = methods.find(method);
     }
 
-    for (auto& action : actions)
-    {
-        // Groups are optional, so a method is only required if there are groups
-        // i.e.) An init triggered event without any groups results in just
-        // running the actions
-        if (!action->getGroups().empty() && handler == methods.end())
+    return [handler = std::move(handler)](
+               const std::string& eventName, Manager* mgr,
+               const std::vector<Group>& groups,
+               std::vector<std::unique_ptr<ActionBase>>& actions) {
+        // Event groups are optional, so a method is only required if there
+        // are event groups i.e.) An init triggered event without any event
+        // groups results in just running the actions
+        if (!groups.empty() && handler == methods.end())
         {
             // Construct list of available methods
             auto availMethods = std::accumulate(
@@ -152,19 +162,15 @@ enableTrigger triggerInit(const json& jsonObj, const std::string& eventName,
             log<level::ERR>(msg.c_str());
             throw std::runtime_error(msg.c_str());
         }
-    }
 
-    return [handler = std::move(handler)](
-               const std::string& eventName, Manager* mgr,
-               std::vector<std::unique_ptr<ActionBase>>& actions) {
+        for (const auto& group : groups)
+        {
+            // Call method handler for each group to populate cache
+            handler->second(mgr, group);
+        }
         for (auto& action : actions)
         {
-            for (const auto& group : action->getGroups())
-            {
-                // Call method handler for each group in the actions
-                handler->second(mgr, group);
-            }
-            // Run the action
+            // Run each action after initializing all the groups
             action->run();
         }
     };

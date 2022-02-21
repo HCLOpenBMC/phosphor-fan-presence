@@ -37,6 +37,8 @@ namespace phosphor::fan::control::json
 using json = nlohmann::json;
 using namespace phosphor::logging;
 
+std::map<configKey, std::unique_ptr<Group>> Event::allGroups;
+
 Event::Event(const json& jsonObj, Manager* mgr,
              std::map<configKey, std::unique_ptr<Zone>>& zones) :
     ConfigBase(jsonObj),
@@ -57,16 +59,47 @@ Event::Event(const json& jsonObj, Manager* mgr,
 
 void Event::enable()
 {
-    for (const auto& trigger : _triggers)
+    for (const auto& [type, trigger] : _triggers)
     {
-        trigger(getName(), _manager, _actions);
+        // Don't call the powerOn or powerOff triggers
+        if (type.find("power") == std::string::npos)
+        {
+            trigger(getName(), _manager, _groups, _actions);
+        }
     }
 }
 
-auto& Event::getAvailGroups()
+void Event::powerOn()
 {
-    static auto groups = Manager::getConfig<Group>(true);
-    return groups;
+    for (const auto& [type, trigger] : _triggers)
+    {
+        if (type == "poweron")
+        {
+            trigger(getName(), _manager, _groups, _actions);
+        }
+    }
+}
+
+void Event::powerOff()
+{
+    for (const auto& [type, trigger] : _triggers)
+    {
+        if (type == "poweroff")
+        {
+            trigger(getName(), _manager, _groups, _actions);
+        }
+    }
+}
+
+std::map<configKey, std::unique_ptr<Group>>&
+    Event::getAllGroups(bool loadGroups)
+{
+    if (allGroups.empty() && loadGroups)
+    {
+        allGroups = Manager::getConfig<Group>(true);
+    }
+
+    return allGroups;
 }
 
 void Event::configGroup(Group& group, const json& jsonObj)
@@ -110,7 +143,7 @@ void Event::setGroups(const json& jsonObj,
 {
     if (jsonObj.contains("groups"))
     {
-        auto& availGroups = getAvailGroups();
+        auto& availGroups = getAllGroups();
         for (const auto& jsonGrp : jsonObj["groups"])
         {
             if (!jsonGrp.contains("name"))
@@ -147,19 +180,6 @@ void Event::setActions(const json& jsonObj)
             log<level::ERR>("Missing required event action name",
                             entry("JSON=%s", jsonAct.dump().c_str()));
             throw std::runtime_error("Missing required event action name");
-        }
-
-        // Append action specific groups to the list of event groups for each
-        // action in the event
-        auto actionGroups = _groups;
-        setGroups(jsonAct, _profiles, actionGroups);
-        if (actionGroups.empty())
-        {
-            log<level::DEBUG>(
-                fmt::format("No groups configured for event {}'s action {} "
-                            "based on the active profile(s)",
-                            getName(), jsonAct["name"].get<std::string>())
-                    .c_str());
         }
 
         // Determine list of zones action should be run against
@@ -211,13 +231,40 @@ void Event::setActions(const json& jsonObj)
                     .c_str());
         }
 
-        // Create the action for the event
-        auto actObj = ActionFactory::getAction(
-            jsonAct["name"].get<std::string>(), jsonAct,
-            std::move(actionGroups), std::move(actionZones));
-        if (actObj)
+        // Action specific groups, if any given, will override the use of event
+        // groups in the action(s)
+        std::vector<Group> actionGroups;
+        setGroups(jsonAct, _profiles, actionGroups);
+        if (!actionGroups.empty())
         {
-            _actions.emplace_back(std::move(actObj));
+            // Create the action for the event using the action's groups
+            auto actObj = ActionFactory::getAction(
+                jsonAct["name"].get<std::string>(), jsonAct,
+                std::move(actionGroups), std::move(actionZones));
+            if (actObj)
+            {
+                _actions.emplace_back(std::move(actObj));
+            }
+        }
+        else
+        {
+            // Create the action for the event using the event's groups
+            auto actObj = ActionFactory::getAction(
+                jsonAct["name"].get<std::string>(), jsonAct, _groups,
+                std::move(actionZones));
+            if (actObj)
+            {
+                _actions.emplace_back(std::move(actObj));
+            }
+        }
+
+        if (actionGroups.empty() && _groups.empty())
+        {
+            log<level::DEBUG>(
+                fmt::format("No groups configured for event {}'s action {} "
+                            "based on the active profile(s)",
+                            getName(), jsonAct["name"].get<std::string>())
+                    .c_str());
         }
     }
 }
@@ -245,6 +292,7 @@ void Event::setTriggers(const json& jsonObj)
         if (trigFunc != trigger::triggers.end())
         {
             _triggers.emplace_back(
+                trigFunc->first,
                 trigFunc->second(jsonTrig, getName(), _actions));
         }
         else

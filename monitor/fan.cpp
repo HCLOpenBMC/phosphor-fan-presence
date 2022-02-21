@@ -73,7 +73,8 @@ Fan::Fan(Mode mode, sdbusplus::bus::bus& bus, const sdeventplus::Event& event,
             std::get<hasTargetField>(s), std::get<funcDelay>(def),
             std::get<targetInterfaceField>(s), std::get<factorField>(s),
             std::get<offsetField>(s), std::get<methodField>(def),
-            std::get<thresholdField>(s), std::get<timeoutField>(def),
+            std::get<thresholdField>(s), std::get<ignoreAboveMaxField>(s),
+            std::get<timeoutField>(def),
             std::get<nonfuncRotorErrDelayField>(def),
             std::get<countIntervalField>(def), event));
 
@@ -356,24 +357,30 @@ size_t Fan::countNonFunctionalSensors() const
 
 bool Fan::outOfRange(const TachSensor& sensor)
 {
-    auto actual = static_cast<uint64_t>(sensor.getInput());
-    auto range = sensor.getRange(_deviation);
-
-    if ((actual < range.first) || (actual > range.second))
+    if (!sensor.hasOwner())
     {
         return true;
     }
 
-    return false;
+    auto actual = static_cast<uint64_t>(sensor.getInput());
+    auto range = sensor.getRange(_deviation);
+
+    return ((actual < range.first) ||
+            (range.second && actual > range.second.value()));
 }
 
 void Fan::updateState(TachSensor& sensor)
 {
-    auto range = sensor.getRange(_deviation);
-
     if (!_system.isPowerOn())
     {
         return;
+    }
+
+    auto range = sensor.getRange(_deviation);
+    std::string rangeMax = "NoMax";
+    if (range.second)
+    {
+        rangeMax = std::to_string(range.second.value());
     }
 
     sensor.setFunctional(!sensor.functional());
@@ -381,7 +388,7 @@ void Fan::updateState(TachSensor& sensor)
         fmt::format("Setting tach sensor {} functional state to {}. "
                     "[target = {}, input = {}, allowed range = ({} - {})]",
                     sensor.name(), sensor.functional(), sensor.getTarget(),
-                    sensor.getInput(), range.first, range.second));
+                    sensor.getInput(), range.first, rangeMax));
 
     // A zero value for _numSensorFailsForNonFunc means we aren't dealing
     // with fan FRU functional status, only sensor functional status.
@@ -425,9 +432,9 @@ bool Fan::updateInventory(bool functional)
             util::getObjMap<bool>(_name, util::OPERATIONAL_STATUS_INTF,
                                   util::FUNCTIONAL_PROPERTY, functional);
 
-        auto response = util::SDBusPlus::lookupAndCallMethod(
-            _bus, util::INVENTORY_PATH, util::INVENTORY_INTF, "Notify",
-            objectMap);
+        auto response = util::SDBusPlus::callMethod(
+            _bus, util::INVENTORY_SVC, util::INVENTORY_PATH,
+            util::INVENTORY_INTF, "Notify", objectMap);
 
         if (response.is_method_error())
         {

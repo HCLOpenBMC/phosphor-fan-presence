@@ -4,12 +4,13 @@
 
 #include <phosphor-logging/log.hpp>
 #include <sdbusplus/bus.hpp>
-#include <sdbusplus/server.hpp>
+#include <sdbusplus/bus/match.hpp>
 #include <sdeventplus/clock.hpp>
 #include <sdeventplus/event.hpp>
 #include <sdeventplus/utility/timer.hpp>
 
 #include <chrono>
+#include <optional>
 #include <utility>
 
 namespace phosphor
@@ -95,6 +96,7 @@ class TachSensor
      * @param[in] offset - the offset of the sensor target
      * @param[in] method - the method of out of range
      * @param[in] threshold - the threshold of counter method
+     * @param[in] ignoreAboveMax - whether to ignore being above max or not
      * @param[in] timeout - Normal timeout value to use
      * @param[in] errorDelay - Delay in seconds before creating an error
      *                         or std::nullopt if no errors.
@@ -105,9 +107,9 @@ class TachSensor
     TachSensor(Mode mode, sdbusplus::bus::bus& bus, Fan& fan,
                const std::string& id, bool hasTarget, size_t funcDelay,
                const std::string& interface, double factor, int64_t offset,
-               size_t method, size_t threshold, size_t timeout,
-               const std::optional<size_t>& errorDelay, size_t countInterval,
-               const sdeventplus::Event& event);
+               size_t method, size_t threshold, bool ignoreAboveMax,
+               size_t timeout, const std::optional<size_t>& errorDelay,
+               size_t countInterval, const sdeventplus::Event& event);
 
     /**
      * @brief Reads a property from the input message and stores it in value.
@@ -170,11 +172,37 @@ class TachSensor
     }
 
     /**
+     * @brief Returns true if sensor has a D-Bus owner
+     */
+    inline bool hasOwner() const
+    {
+        return _hasOwner;
+    }
+
+    /**
+     * @brief sets D-Bus owner status
+     *
+     * @param[in] val - new owner status
+     */
+    inline void setOwner(bool val)
+    {
+        _hasOwner = val;
+    }
+
+    /**
      * @brief Returns the factor of the sensor target
      */
     inline double getFactor() const
     {
         return _factor;
+    }
+
+    /**
+     * @brief Returns a reference to the sensor's Fan object
+     */
+    inline Fan& getFan() const
+    {
+        return _fan;
     }
 
     /**
@@ -311,9 +339,10 @@ class TachSensor
      *
      * @param[in] deviation - The configured deviation(in percent) allowed
      *
-     * @return pair - Min/Max range of speeds allowed
+     * @return pair - Min/Max(optional) range of speeds allowed
      */
-    std::pair<uint64_t, uint64_t> getRange(const size_t deviation) const;
+    std::pair<uint64_t, std::optional<uint64_t>>
+        getRange(const size_t deviation) const;
 
     /**
      * @brief Processes the current state of the sensor
@@ -397,6 +426,11 @@ class TachSensor
     const bool _hasTarget;
 
     /**
+     * @brief If the sensor has a D-Bus owner
+     */
+    bool _hasOwner = true;
+
+    /**
      * @brief Amount of time to delay updating to functional
      */
     const size_t _funcDelay;
@@ -425,6 +459,11 @@ class TachSensor
      * @brief The threshold for count method
      */
     const size_t _threshold;
+
+    /**
+     * @brief Whether to ignore being above the max or not
+     */
+    const bool _ignoreAboveMax;
 
     /**
      * @brief The counter for count method
@@ -460,12 +499,12 @@ class TachSensor
     /**
      * @brief The match object for the Value properties changed signal
      */
-    std::unique_ptr<sdbusplus::server::match::match> tachSignal;
+    std::unique_ptr<sdbusplus::bus::match_t> tachSignal;
 
     /**
      * @brief The match object for the Target properties changed signal
      */
-    std::unique_ptr<sdbusplus::server::match::match> targetSignal;
+    std::unique_ptr<sdbusplus::bus::match_t> targetSignal;
 
     /**
      * @brief The number of seconds to wait between a sensor being set

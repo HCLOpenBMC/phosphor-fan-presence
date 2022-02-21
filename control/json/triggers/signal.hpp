@@ -37,6 +37,7 @@ using json = nlohmann::json;
  *
  * @param[in] match - Signal match string to subscribe to
  * @param[in] pkg - Data package to attach to signal
+ * @param[in] isSameSig - Function to determine if same signal being subscribed
  * @param[in] mgr - Pointer to manager of the trigger
  */
 void subscribe(const std::string& match, SignalPkg&& pkg,
@@ -46,52 +47,63 @@ void subscribe(const std::string& match, SignalPkg&& pkg,
  * @brief Subscribes to a propertiesChanged signal
  *
  * @param[in] mgr - Pointer to manager of the trigger
- * @param[in] eventName - Name of event associated to the signal
- * @param[in] action - Action to be run when signal is received
+ * @param[in] group - Group to subscribe signal against
+ * @param[in] actions - Actions to be run when signal is received
  */
-void propertiesChanged(Manager* mgr, const std::string& eventName,
-                       std::unique_ptr<ActionBase>& action);
+void propertiesChanged(Manager* mgr, const Group& group,
+                       TriggerActions& actions, const json&);
 
 /**
  * @brief Subscribes to an interfacesAdded signal
  *
  * @param[in] mgr - Pointer to manager of the trigger
- * @param[in] eventName - Name of event associated to the signal
- * @param[in] action - Action to be run when signal is received
+ * @param[in] group - Group to subscribe signal against
+ * @param[in] actions - Actions to be run when signal is received
  */
-void interfacesAdded(Manager* mgr, const std::string& eventName,
-                     std::unique_ptr<ActionBase>& action);
+void interfacesAdded(Manager* mgr, const Group& group, TriggerActions& actions,
+                     const json&);
 
 /**
  * @brief Subscribes to an interfacesRemoved signal
  *
  * @param[in] mgr - Pointer to manager of the trigger
- * @param[in] eventName - Name of event associated to the signal
- * @param[in] action - Action to be run when signal is received
+ * @param[in] group - Group to subscribe signal against
+ * @param[in] actions - Actions to be run when signal is received
  */
-void interfacesRemoved(Manager* mgr, const std::string& eventName,
-                       std::unique_ptr<ActionBase>& action);
+void interfacesRemoved(Manager* mgr, const Group& group,
+                       TriggerActions& actions, const json&);
 
 /**
  * @brief Subscribes to a nameOwnerChanged signal
  *
  * @param[in] mgr - Pointer to manager of the trigger
- * @param[in] eventName - Name of event associated to the signal
- * @param[in] action - Action to be run when signal is received
+ * @param[in] group - Group to subscribe signal against
+ * @param[in] actions - Actions to be run when signal is received
  */
-void nameOwnerChanged(Manager* mgr, const std::string& eventName,
-                      std::unique_ptr<ActionBase>& actions);
+void nameOwnerChanged(Manager* mgr, const Group& group, TriggerActions& actions,
+                      const json&);
+
+/**
+ * @brief Subscribes to a dbus member signal
+ *
+ * @param[in] mgr - Pointer to manager of the trigger
+ * @param[in] group - Group to subscribe signal against
+ * @param[in] actions - Actions to be run when signal is received
+ */
+void member(Manager* mgr, const Group& group, TriggerActions& actions,
+            const json&);
 
 // Match setup function for signals
-using SignalMatch = std::function<void(Manager*, const std::string&,
-                                       std::unique_ptr<ActionBase>& action)>;
+using SignalMatch =
+    std::function<void(Manager*, const Group&, TriggerActions&, const json&)>;
 
 /* Supported signals to their corresponding match setup functions */
 static const std::unordered_map<std::string, SignalMatch> signals = {
     {"properties_changed", propertiesChanged},
     {"interfaces_added", interfacesAdded},
     {"interfaces_removed", interfacesRemoved},
-    {"name_owner_changed", nameOwnerChanged}};
+    {"name_owner_changed", nameOwnerChanged},
+    {"member", member}};
 
 /**
  * @brief Trigger to process an event after a signal is received

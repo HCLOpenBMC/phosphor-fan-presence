@@ -107,7 +107,12 @@ ThresholdAlarmLogger::ThresholdAlarmLogger(
                   "arg0='" +
                       perfLossInterface + "'",
                   std::bind(&ThresholdAlarmLogger::propertiesChanged, this,
-                            std::placeholders::_1))
+                            std::placeholders::_1)),
+    ifacesRemovedMatch(bus,
+                       "type='signal',member='InterfacesRemoved',arg0path="
+                       "'/xyz/openbmc_project/sensors/'",
+                       std::bind(&ThresholdAlarmLogger::interfacesRemoved, this,
+                                 std::placeholders::_1))
 {
     _powerState->addCallback("thresholdMon",
                              std::bind(&ThresholdAlarmLogger::powerStateChanged,
@@ -175,6 +180,25 @@ void ThresholdAlarmLogger::propertiesChanged(sdbusplus::message::message& msg)
     }
 }
 
+void ThresholdAlarmLogger::interfacesRemoved(sdbusplus::message::message& msg)
+{
+    static const std::vector<std::string> thresholdNames{
+        warningInterface, criticalInterface, perfLossInterface};
+    sdbusplus::message::object_path path;
+    std::vector<std::string> interfaces;
+
+    msg.read(path, interfaces);
+
+    for (const auto& interface : interfaces)
+    {
+        if (std::find(thresholdNames.begin(), thresholdNames.end(),
+                      interface) != thresholdNames.end())
+        {
+            alarms.erase(InterfaceKey{path, interface});
+        }
+    }
+}
+
 void ThresholdAlarmLogger::checkThresholds(const std::string& interface,
                                            const std::string& sensorPath,
                                            const std::string& service)
@@ -200,12 +224,11 @@ void ThresholdAlarmLogger::checkThresholds(const std::string& interface,
                 createEventLog(sensorPath, interface, property, alarmValue);
             }
         }
-        catch (const DBusError& e)
+        catch (const sdbusplus::exception::exception& e)
         {
-            log<level::ERR>(
-                fmt::format("Failed reading sensor threshold properties: {}",
-                            e.what())
-                    .c_str());
+            // Sensor daemons that get their direction from entity manager
+            // may only be putting either the high alarm or low alarm on
+            // D-Bus, not both.
             continue;
         }
         catch (sdbusplus::exception::SdBusError& e)

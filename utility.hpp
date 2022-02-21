@@ -27,12 +27,14 @@ constexpr auto MAPPER_INTERFACE = "xyz.openbmc_project.ObjectMapper";
 
 constexpr auto INVENTORY_PATH = "/xyz/openbmc_project/inventory";
 constexpr auto INVENTORY_INTF = "xyz.openbmc_project.Inventory.Manager";
+constexpr auto INVENTORY_SVC = "xyz.openbmc_project.Inventory.Manager";
 
 constexpr auto OPERATIONAL_STATUS_INTF =
     "xyz.openbmc_project.State.Decorator.OperationalStatus";
 constexpr auto FUNCTIONAL_PROPERTY = "Functional";
 
 constexpr auto INV_ITEM_IFACE = "xyz.openbmc_project.Inventory.Item";
+constexpr auto FAN_SENSOR_VALUE_INTF = "xyz.openbmc_project.Sensor.Value";
 
 class FileDescriptor
 {
