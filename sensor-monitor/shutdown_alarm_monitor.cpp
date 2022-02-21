@@ -130,19 +130,9 @@ void ShutdownAlarmMonitor::findAlarms()
     for (const auto& [shutdownType, interface] : shutdownInterfaces)
     {
         auto paths = SDBusPlus::getSubTreePathsRaw(bus, "/", interface, 0);
-       
-        std::cerr << "interface : " << interface <<std::endl;
-
-      /*  if(paths.empty())
-        {
-           std::cerr << " No paths found for the interface : " << interface << std::endl;
-           continue;
-        }*/
-
+     
         std::for_each(
             paths.begin(), paths.end(), [this, shutdownType](const auto& path) {
-
-                std::cerr << "PATHS : " << path <<std::endl;
 
                 alarms.emplace(AlarmKey{path, shutdownType, AlarmType::high},
                                nullptr);
