@@ -386,14 +386,15 @@ void ShutdownAlarmMonitor::timerExpired(const AlarmKey& alarmKey)
                           "replace");
 
     std::cerr << " Execute Done - obmc-chassis-hard-power off " << std::endl;
-    timestamps.erase(alarmKey);
+    stopTimer(alarmKey);
+    //timestamps.erase(alarmKey);
 }
 
 void ShutdownAlarmMonitor::powerStateChanged(bool powerStateOn)
 {
     if (powerStateOn)
     {
-        checkAlarms();
+//        checkAlarms();
     }
     else
     {
