@@ -337,13 +337,7 @@ class HostPowerState : public PowerState
         const std::string path = "/";
 
         auto mapperResponse =
-            util::SDBusPlus::getSubTree(_bus, path, _hostStateInterface, depth);
-
-        if (mapperResponse.empty())
-        {
-            // No errors to process.
-            return;
-        }
+            util::SDBusPlus::getSubTreeRaw(_bus, path, _hostStateInterface, depth);
 
         for (const auto& path : mapperResponse)
         {
